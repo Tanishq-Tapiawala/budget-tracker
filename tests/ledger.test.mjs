@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { balances, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction } from "../src/ledger.ts";
+import { balances, categoryTotals, monthlyFlow, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction, withCategory } from "../src/ledger.ts";
 
 const accounts = [
   { id: "checking", name: "Checking", type: "bank", opening: 10000 },
@@ -16,6 +16,7 @@ const data = (changes = {}) => ({
   goals: [],
   categories: {},
   categoryIcons: {},
+  subcategoryIcons: {},
   skippedSources: [],
   ...changes,
 });
@@ -69,4 +70,37 @@ test("upcoming obligations use today's month and exclude future-starting schedul
   ] });
   assert.equal(upcomingBankObligations(ledger, "2026-10-29"), 1000);
   assert.equal(upcomingBankObligations(ledger, "2026-10-31"), 0);
+});
+
+test("income and expense chart totals are grouped by month", () => {
+  const points = monthlyFlow([
+    { id: "a", date: "2026-09-03", type: "income", amount: 1000 },
+    { id: "b", date: "2026-10-03", type: "expense", amount: 250 },
+    { id: "c", date: "2026-10-04", type: "transfer", amount: 500 },
+  ], "2026-10", 2);
+  assert.deepEqual(points, [
+    { month: "2026-09", income: 1000, expense: 0 },
+    { month: "2026-10", income: 0, expense: 250 },
+  ]);
+});
+
+test("category chart includes uncategorized spending", () => {
+  assert.deepEqual(categoryTotals([
+    { id: "a", type: "expense", amount: 200, category: "Food" },
+    { id: "b", type: "expense", amount: 100 },
+    { id: "c", type: "income", amount: 500 },
+  ]), [
+    { category: "Food", amount: 200 },
+    { category: "Uncategorized", amount: 100 },
+  ]);
+});
+
+test("a transaction can create a group and subcategory with icons in one ledger update", () => {
+  const updated = withCategory(data(), "Pets", "Food", "🐾", "🥦");
+  assert.deepEqual(updated.categories.Pets, ["Food"]);
+  assert.equal(updated.categoryIcons.Pets, "🐾");
+  assert.equal(updated.subcategoryIcons.Pets.Food, "🥦");
+  const renamedIcon = withCategory(updated, "Pets", "Food", "", "🧾");
+  assert.deepEqual(renamedIcon.categories.Pets, ["Food"]);
+  assert.equal(renamedIcon.subcategoryIcons.Pets.Food, "🧾");
 });

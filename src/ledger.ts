@@ -8,8 +8,35 @@ export type Data = {
   goals: Item[];
   categories: Record<string, string[]>;
   categoryIcons: Record<string, string>;
+  subcategoryIcons: Record<string, Record<string, string>>;
   skippedSources: string[];
 };
+
+export function withCategory(
+  data: Data,
+  group: string,
+  subgroup = "",
+  groupIcon = "",
+  subgroupIcon = "",
+): Data {
+  const categories = {
+    ...data.categories,
+    [group]: [...new Set([...(data.categories[group] || []), ...(subgroup ? [subgroup] : [])])],
+  };
+  return {
+    ...data,
+    categories,
+    categoryIcons: groupIcon
+      ? { ...data.categoryIcons, [group]: groupIcon }
+      : data.categoryIcons,
+    subcategoryIcons: subgroup && subgroupIcon
+      ? {
+          ...data.subcategoryIcons,
+          [group]: { ...(data.subcategoryIcons[group] || {}), [subgroup]: subgroupIcon },
+        }
+      : data.subcategoryIcons,
+  };
+}
 
 const monthOf = (date: string) => date.slice(0, 7);
 const shiftMonth = (month: string, count: number) => {
@@ -27,6 +54,31 @@ export function transactionsForPeriod(data: Data, month: string, annual: boolean
   return data.transactions.filter((transaction) =>
     yearly ? transaction.date.startsWith(month.slice(0, 4)) : monthOf(transaction.date) === month,
   );
+}
+
+export function monthlyFlow(transactions: Item[], endMonth: string, count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const month = shiftMonth(endMonth, index - count + 1);
+    const matching = transactions.filter((transaction) => monthOf(transaction.date) === month);
+    return {
+      month,
+      income: matching.filter((transaction) => transaction.type === "income")
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+      expense: matching.filter((transaction) => transaction.type === "expense")
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+    };
+  });
+}
+
+export function categoryTotals(transactions: Item[]) {
+  const totals = new Map<string, number>();
+  for (const transaction of transactions) {
+    if (transaction.type !== "expense" || transaction.amount <= 0) continue;
+    const category = transaction.category || "Uncategorized";
+    totals.set(category, (totals.get(category) || 0) + transaction.amount);
+  }
+  return [...totals].map(([category, amount]) => ({ category, amount }))
+    .sort((a, b) => b.amount - a.amount);
 }
 
 export function upcomingBankObligations(data: Data, today: string) {

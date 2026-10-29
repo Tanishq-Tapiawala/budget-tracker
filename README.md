@@ -9,6 +9,8 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 - Monthly recurring income and charges (posted on next app opening after a due date)
 - Skipped recurring occurrences stay skipped; creating a due schedule posts it immediately
 - Category budgets, monthly savings reserves and safe-to-spend estimate
+- Income/expense trend charts and category spending charts on the dashboard and reports
+- Create category groups and subcategories, with icons, while recording an expense
 - Archived zero-balance accounts retain their transaction history and can be restored
 - Trips with linked expenses and budgets
 - Monthly/yearly dashboard, insights, CSV export, printable reports

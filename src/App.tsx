@@ -27,8 +27,9 @@ import {
   supabase,
 } from "./supabase";
 import type { User } from "@supabase/supabase-js";
-import { balances, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction } from "./ledger";
+import { balances, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction, withCategory } from "./ledger";
 import type { Data, Item } from "./ledger";
+import { CashflowChart, CategoryDonut } from "./charts";
 const blank: Data = {
   accounts: [],
   transactions: [],
@@ -37,6 +38,7 @@ const blank: Data = {
   trips: [],
   goals: [],
   skippedSources: [],
+  subcategoryIcons: {},
   categories: {
     Housing: ["Rent", "Utilities", "Internet"],
     Food: ["Groceries", "Dining", "Coffee"],
@@ -78,7 +80,8 @@ const categoryIcons: Record<string, string> = {
   Travel: "✈️",
   Other: "✨",
 };
-const categoryIconOptions = ["🏠","🍽️","🚗","🛍️","🎉","💊","✈️","✨","💰","📁","🧾","🧺","🏡","🎯","💳","📦"]; 
+const categoryIconOptions = ["🏠","🍽️","🚗","🛍️","🎉","💊","✈️","✨","💰","📁","🧾","🧺","🏡","🎯","💳","📦"];
+const subcategoryIconOptions = ["🏷️","☕","🥦","🍔","🛒","🚕","🚆","⛽","💡","📱","🎬","🎁","💊","🏨","✈️","🧾","📦","✨"];
 const usd = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     n / 100,
@@ -150,7 +153,12 @@ function MoneyApp({ user }: { user: User }) {
           .eq("owner_id", user.id)
           .maybeSingle();
         if (error) throw error;
-        setD(data?.payload ? { ...blank, ...data.payload, categoryIcons: { ...blank.categoryIcons, ...(data.payload.categoryIcons || {}) } } : blank);
+        setD(data?.payload ? {
+          ...blank,
+          ...data.payload,
+          categoryIcons: { ...blank.categoryIcons, ...(data.payload.categoryIcons || {}) },
+          subcategoryIcons: data.payload.subcategoryIcons || {},
+        } : blank);
         setRev(data?.revision ?? 0);
         setReady(true);
       } catch (e) {
@@ -226,6 +234,7 @@ function MoneyApp({ user }: { user: User }) {
   const safe =
     bankTotal - debt - obligations - d.goals.reduce((a, g) => a + g.monthly, 0);
   function open(type: string, entry: Item | Record<string, any> = {}) {
+    setError("");
     setModal(type);
     const obj: Record<string, string> = {};
     Object.entries(entry).forEach(
@@ -266,6 +275,52 @@ function MoneyApp({ user }: { user: User }) {
       base.amount = v;
       base.date = f.date || now();
       base.type = f.type || "expense";
+      if (base.type === "expense") {
+        const newGroup = f.category === "__new__";
+        const newSubgroup = f.sub === "__new__";
+        const group = (newGroup ? f.newCategory : f.category || "").trim();
+        const subgroup = (newSubgroup ? f.newSub : f.sub || "").trim();
+        if (newGroup && !group) {
+          setError("Enter a name for the new category group.");
+          return;
+        }
+        if (newGroup && d.categories[group]) {
+          setError("That category group already exists. Select it from the list.");
+          return;
+        }
+        if (newSubgroup && !subgroup) {
+          setError("Enter a name for the new subcategory.");
+          return;
+        }
+        if (newSubgroup && !group) {
+          setError("Choose or create a category group first.");
+          return;
+        }
+        if (newSubgroup && d.categories[group]?.includes(subgroup)) {
+          setError("That subcategory already exists. Select it from the list.");
+          return;
+        }
+        if (newGroup || newSubgroup) {
+          next = withCategory(
+            next,
+            group,
+            subgroup,
+            newGroup ? f.newCategoryIcon || "📁" : "",
+            newSubgroup ? f.newSubIcon || "🏷️" : "",
+          );
+        }
+        base.category = group;
+        base.sub = subgroup;
+      } else {
+        delete base.category;
+        delete base.sub;
+        delete base.trip;
+      }
+      if (base.type !== "transfer" && base.type !== "payment") delete base.to;
+      delete base.newCategory;
+      delete base.newCategoryIcon;
+      delete base.newSub;
+      delete base.newSubIcon;
       const original = d.transactions.find((transaction) => transaction.id === key);
       const problem = validateTransaction(base, d.accounts, original);
       if (problem) {
@@ -316,16 +371,7 @@ function MoneyApp({ user }: { user: User }) {
         setError("Category group is required");
         return;
       }
-      next.categories = {
-        ...d.categories,
-        [group]: [
-          ...new Set([...(d.categories[group] || []), ...(sub ? [sub] : [])]),
-        ],
-      };
-      next.categoryIcons = {
-        ...d.categoryIcons,
-        [group]: icon,
-      };
+      next = withCategory(next, group, sub, icon, sub ? f.subIcon || d.subcategoryIcons[group]?.[sub] || "🏷️" : "");
     }
     if (await save(next)) setModal("");
   }
@@ -447,6 +493,7 @@ function MoneyApp({ user }: { user: User }) {
     edit: () => void,
     del?: () => void,
     actionLabel = "Edit",
+    valueTone = "",
   ) {
     return (
       <div className="row">
@@ -457,7 +504,7 @@ function MoneyApp({ user }: { user: User }) {
           <strong>{title}</strong>
           <small>{description}</small>
         </div>
-        <b>{value}</b>
+        <b className={valueTone}>{value}</b>
         <button className={`row-action ${actionLabel === "Edit" ? "" : "restore"}`} onClick={edit} aria-label={actionLabel}>
           {actionLabel === "Edit" ? "✎" : actionLabel}
         </button>
@@ -505,6 +552,14 @@ function MoneyApp({ user }: { user: User }) {
   const recent = [...d.transactions].sort((a, b) =>
     b.date.localeCompare(a.date),
   );
+  const transactionTone = (transaction: Item) =>
+    transaction.type === "income" ? "green" : transaction.type === "expense" ? "red" : "";
+  const transactionValue = (transaction: Item) =>
+    `${transaction.type === "income" ? "+" : transaction.type === "expense" ? "−" : ""}${usd(transaction.amount)}`;
+  const transactionTitle = (transaction: Item) => {
+    const icon = transaction.sub ? d.subcategoryIcons[transaction.category]?.[transaction.sub] || "🏷️" : "";
+    return `${icon ? `${icon} ` : ""}${transaction.note || transaction.sub || transaction.category || transaction.type}`;
+  };
   return (
     <div className="shell">
       <aside className={`sidebar ${mobile ? "visible" : ""}`}>
@@ -634,11 +689,18 @@ function MoneyApp({ user }: { user: User }) {
                     ].map(([title, value, sub]) => (
                       <div className="stat" key={title}>
                         <span>{title}</span>
-                        <strong>{usd(value as number)}</strong>
+                        <strong className={title === "Recorded income" ? "green" : title === "Recorded expenses" || title === "Current card debt" ? "red" : ""}>{usd(value as number)}</strong>
                         <small>{sub}</small>
                       </div>
                     ))}
                   </div>
+                  <section className="panel chart-panel">
+                    <div className="panel-head">
+                      <h2>Income and expenses over time</h2>
+                      <span className="tag">{annual ? "Jan–Dec" : "Last 6 months"}</span>
+                    </div>
+                    <CashflowChart transactions={d.transactions} endMonth={annual ? `${month.slice(0, 4)}-12` : month} count={annual ? 12 : 6} format={usd} />
+                  </section>
                   <div className="columns">
                     <section className="panel">
                       <div className="panel-head">
@@ -652,7 +714,7 @@ function MoneyApp({ user }: { user: User }) {
                           Income <b className="green">{usd(income)}</b>
                         </div>
                         <div>
-                          Expenses <b>{usd(spent)}</b>
+                          Expenses <b className="red">{usd(spent)}</b>
                         </div>
                         <div className="cash-surplus">
                           Net surplus{" "}
@@ -662,27 +724,7 @@ function MoneyApp({ user }: { user: User }) {
                         </div>
                       </div>
                       <h3>Category spending</h3>
-                      {groups
-                        .filter((g) => catSpent(g.value) > 0)
-                        .sort((a, b) => catSpent(b.value) - catSpent(a.value))
-                        .slice(0, 5)
-                        .map((g) => (
-                          <div className="progress" key={g.value}>
-                            <div>
-                              <span>{g.label}</span>
-                              <b>{usd(catSpent(g.value))}</b>
-                            </div>
-                            <div className="bar">
-                              <div
-                                style={{
-                                  width: `${spent ? (catSpent(g.value) / spent) * 100 : 0}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      {!spent &&
-                        empty("Add transactions to see where your money goes.")}
+                      <CategoryDonut transactions={period} format={usd} />
                     </section>
                     <section className="panel">
                       <div className="panel-head">
@@ -710,7 +752,7 @@ function MoneyApp({ user }: { user: User }) {
                               <b>{s.name}</b>
                               <small>{name(s.account)}</small>
                             </div>
-                            <strong>{usd(s.amount)}</strong>
+                            <strong className="red">{usd(s.amount)}</strong>
                           </div>
                         ))}
                       {!d.schedules.length &&
@@ -730,10 +772,13 @@ function MoneyApp({ user }: { user: User }) {
                     {recent.slice(0, 5).map((t) => (
                       <div key={t.id}>
                         {row(
-                          t.note || t.category || t.type,
+                          transactionTitle(t),
                           `${t.date} · ${name(t.account)}`,
-                          usd(t.amount),
+                          transactionValue(t),
                           () => open("transaction", t),
+                          undefined,
+                          "Edit",
+                          transactionTone(t),
                         )}
                       </div>
                     ))}
@@ -877,6 +922,8 @@ function MoneyApp({ user }: { user: User }) {
                           usd(s.amount),
                           () => open("schedule", s),
                           () => remove("schedules", s.id),
+                          "Edit",
+                          s.type === "income" ? "green" : "red",
                         )}
                       </div>
                     ))}
@@ -944,11 +991,13 @@ function MoneyApp({ user }: { user: User }) {
                       .map((t) => (
                         <div key={t.id}>
                           {row(
-                            t.note || t.sub || t.category || t.type,
+                            transactionTitle(t),
                             `${t.date} · ${t.type} · ${name(t.account)}`,
-                            usd(t.amount),
+                            transactionValue(t),
                             () => open("transaction", t),
                             () => remove("transactions", t.id),
+                            "Edit",
+                            transactionTone(t),
                           )}
                         </div>
                       ))}
@@ -969,7 +1018,7 @@ function MoneyApp({ user }: { user: User }) {
                         <div className="budget-top">
                           <b>{b.category}</b>
                           <span>
-                            {usd(catSpent(b.category))} / {usd(b.amount)}{" "}
+                            <b className="red">{usd(catSpent(b.category))}</b> / {usd(b.amount)}{" "}
                             <button onClick={() => open("budget", b)}>✎</button>
                             <button onClick={() => remove("budgets", b.id)}>
                               ×
@@ -1047,8 +1096,14 @@ function MoneyApp({ user }: { user: User }) {
                         <div className="subcategory-list">
                           {subs.map((sub) => (
                             <span className="subcategory-pill" key={`${g}-${sub}`}>
-                              <span className="category-dot" aria-hidden="true" />
+                              <span className="subcategory-icon" aria-hidden="true">{d.subcategoryIcons[g]?.[sub] || "🏷️"}</span>
                               {sub}
+                              <button
+                                type="button"
+                                className="subcategory-edit"
+                                onClick={() => open("category", { name: g, sub, subIcon: d.subcategoryIcons[g]?.[sub] || "🏷️" })}
+                                aria-label={`Edit ${sub} icon`}
+                              >✎</button>
                               <button
                                 type="button"
                                 className="subcategory-remove"
@@ -1082,7 +1137,7 @@ function MoneyApp({ user }: { user: User }) {
                           <Plane size={24} />
                           <small>{t.destination}</small>
                           <h2>{t.name}</h2>
-                          <strong>
+                          <strong className="red">
                             {usd(spent)} <small>/ {usd(t.budget)}</small>
                           </strong>
                           <div className="bar">
@@ -1171,39 +1226,28 @@ function MoneyApp({ user }: { user: User }) {
                   <div className="stats">
                     <div className="stat">
                       <span>Income</span>
-                      <strong>{usd(income)}</strong>
+                      <strong className="green">{usd(income)}</strong>
                     </div>
                     <div className="stat">
                       <span>Spending</span>
-                      <strong>{usd(spent)}</strong>
+                      <strong className="red">{usd(spent)}</strong>
                     </div>
                     <div className="stat">
                       <span>Surplus</span>
-                      <strong>{usd(income - spent)}</strong>
+                      <strong className={income >= spent ? "green" : "red"}>{usd(income - spent)}</strong>
                     </div>
                   </div>
+                  <section className="panel chart-panel">
+                    <div className="panel-head">
+                      <h2>Income and expenses over time</h2>
+                      <span className="tag">{annual ? "Jan–Dec" : "Last 6 months"}</span>
+                    </div>
+                    <CashflowChart transactions={d.transactions} endMonth={annual ? `${month.slice(0, 4)}-12` : month} count={annual ? 12 : 6} format={usd} />
+                  </section>
                   <div className="columns">
                     <section className="panel">
                       <h2>Spending by category</h2>
-                      {groups
-                        .filter((g) => catSpent(g.value) > 0)
-                        .sort((a, b) => catSpent(b.value) - catSpent(a.value))
-                        .map((g) => (
-                          <div className="progress" key={g.value}>
-                            <div>
-                              <span>{g.label}</span>
-                              <b>{usd(catSpent(g.value))}</b>
-                            </div>
-                            <div className="bar">
-                              <div
-                                style={{
-                                  width: `${spent ? (catSpent(g.value) / spent) * 100 : 0}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      {!spent && empty("No expenses in this period.")}
+                      <CategoryDonut transactions={period} format={usd} />
                     </section>
                     <section className="panel">
                       <h2>Ways to save</h2>
@@ -1269,6 +1313,7 @@ function MoneyApp({ user }: { user: User }) {
                 <X size={20} />
               </button>
             </div>
+            {error && <div className="error dialog-error" role="alert">{error}</div>}
             <div className="fields">
               {modal === "account" && (
                 <>
@@ -1324,15 +1369,48 @@ function MoneyApp({ user }: { user: User }) {
                     )}
                   {(!f.type || f.type === "expense") && (
                     <>
-                      {field("Group", "category", "select", groups)}
-                      {field(
-                        "Subgroup",
-                        "sub",
-                        "select",
-                        (d.categories[f.category] || []).map((x) => ({
-                          value: x,
-                          label: x,
-                        })),
+                      <label className="field">
+                        <span>Group</span>
+                        <select value={f.category || ""} onChange={(e) => setF({
+                          ...f,
+                          category: e.target.value,
+                          sub: "",
+                          newCategory: "",
+                          newSub: "",
+                          newCategoryIcon: "📁",
+                          newSubIcon: "🏷️",
+                        })}>
+                          <option value="">Select…</option>
+                          {groups.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}
+                          <option value="__new__">+ Create new group</option>
+                        </select>
+                      </label>
+                      {f.category === "__new__" && (
+                        <div className="inline-category-fields">
+                          {field("New group name", "newCategory")}
+                          {field("Group icon", "newCategoryIcon", "select", categoryIconOptions.map((icon) => ({ value: icon, label: icon })))}
+                        </div>
+                      )}
+                      <label className="field">
+                        <span>Subcategory</span>
+                        <select value={f.sub || ""} disabled={!f.category} onChange={(e) => setF({
+                          ...f,
+                          sub: e.target.value,
+                          newSub: "",
+                          newSubIcon: "🏷️",
+                        })}>
+                          <option value="">None</option>
+                          {(d.categories[f.category] || []).map((sub) => (
+                            <option key={sub} value={sub}>{d.subcategoryIcons[f.category]?.[sub] || "🏷️"} {sub}</option>
+                          ))}
+                          <option value="__new__">+ Create new subcategory</option>
+                        </select>
+                      </label>
+                      {f.sub === "__new__" && (
+                        <div className="inline-category-fields">
+                          {field("New subcategory name", "newSub")}
+                          {field("Subcategory icon", "newSubIcon", "select", subcategoryIconOptions.map((icon) => ({ value: icon, label: icon })))}
+                        </div>
                       )}
                       {field(
                         "Trip (optional)",
@@ -1365,7 +1443,7 @@ function MoneyApp({ user }: { user: User }) {
                         "select",
                         (d.categories[f.category] || []).map((x) => ({
                           value: x,
-                          label: x,
+                          label: `${d.subcategoryIcons[f.category]?.[x] || "🏷️"} ${x}`,
                         })),
                       )}
                     </>
@@ -1441,6 +1519,7 @@ function MoneyApp({ user }: { user: User }) {
                     </select>
                   </label>
                   {field("Subgroup name", "sub")}
+                  {f.sub && field("Subgroup icon", "subIcon", "select", subcategoryIconOptions.map((icon) => ({ value: icon, label: icon })))}
                 </>
               )}
             </div>
