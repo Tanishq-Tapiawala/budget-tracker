@@ -27,17 +27,8 @@ import {
   supabase,
 } from "./supabase";
 import type { User } from "@supabase/supabase-js";
-type Item = { id: string; [key: string]: any };
-type Data = {
-  accounts: Item[];
-  transactions: Item[];
-  schedules: Item[];
-  budgets: Item[];
-  trips: Item[];
-  goals: Item[];
-  categories: Record<string, string[]>;
-  categoryIcons: Record<string, string>;
-};
+import { balances, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction } from "./ledger";
+import type { Data, Item } from "./ledger";
 const blank: Data = {
   accounts: [],
   transactions: [],
@@ -45,6 +36,7 @@ const blank: Data = {
   budgets: [],
   trips: [],
   goals: [],
+  skippedSources: [],
   categories: {
     Housing: ["Rent", "Utilities", "Internet"],
     Food: ["Groceries", "Dining", "Coffee"],
@@ -99,67 +91,7 @@ const shift = (m: string, n: number) => {
   return new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7);
 };
 const amount = (v: any) => Math.round((Number(v) || 0) * 100);
-const dateFor = (m: string, d: number) => {
-  const [y, mo] = m.split("-").map(Number);
-  return (
-    m +
-    "-" +
-    String(
-      Math.min(Math.max(1, d), new Date(Date.UTC(y, mo, 0)).getUTCDate()),
-    ).padStart(2, "0")
-  );
-};
 const id = () => crypto.randomUUID();
-function balances(d: Data) {
-  const b: Record<string, number> = {};
-  d.accounts.forEach((a) => (b[a.id] = a.opening || 0));
-  d.transactions.forEach((t) => {
-    if (!(t.account in b)) return;
-    if (t.type === "income" || t.type === "adjustment")
-      b[t.account] += t.amount;
-    else if (t.type === "expense")
-      b[t.account] +=
-        d.accounts.find((a) => a.id === t.account)?.type === "card"
-          ? t.amount
-          : -t.amount;
-    else if (t.type === "transfer" || t.type === "payment") {
-      b[t.account] -= t.amount;
-      if (t.to in b) b[t.to] += t.type === "payment" ? -t.amount : t.amount;
-    }
-  });
-  return b;
-}
-function postDue(d: Data) {
-  let dirty = false;
-  const transactions = [...d.transactions],
-    known = new Set(transactions.map((t) => t.source));
-  for (const s of d.schedules) {
-    let m = mid(s.start || now()),
-      end = mid(now()),
-      guard = 0;
-    while (m <= end && guard++ < 120) {
-      const due = dateFor(m, s.day);
-      const source = `${s.id}:${m}`;
-      if (due >= s.start && due <= now() && !known.has(source)) {
-        transactions.push({
-          id: id(),
-          date: due,
-          type: s.type,
-          amount: s.amount,
-          account: s.account,
-          category: s.category,
-          sub: s.sub,
-          note: s.name,
-          source,
-        });
-        known.add(source);
-        dirty = true;
-      }
-      m = shift(m, 1);
-    }
-  }
-  return dirty ? { ...d, transactions } : d;
-}
 const download = (rows: any[][], name: string) => {
   const text = rows
     .map((row) =>
@@ -267,19 +199,19 @@ function MoneyApp({ user }: { user: User }) {
   }
   useEffect(() => {
     if (!ready) return;
-    const next = postDue(d);
+    const next = postDue(d, now());
     if (next !== d) void save(next);
   }, [ready]);
   const bal = useMemo(() => balances(d), [d]);
   const name = (key: string) =>
     d.accounts.find((a) => a.id === key)?.name || "Unknown";
-  const bank = d.accounts.filter((a) => a.type === "bank"),
-    cards = d.accounts.filter((a) => a.type === "card");
+  const bank = d.accounts.filter((a) => a.type === "bank" && !a.archived),
+    cards = d.accounts.filter((a) => a.type === "card" && !a.archived),
+    archivedBank = d.accounts.filter((a) => a.type === "bank" && a.archived),
+    archivedCards = d.accounts.filter((a) => a.type === "card" && a.archived);
   const bankTotal = bank.reduce((a, x) => a + (bal[x.id] || 0), 0),
     debt = cards.reduce((a, x) => a + Math.max(0, bal[x.id] || 0), 0);
-  const period = d.transactions.filter((t) =>
-    annual ? t.date.startsWith(month.slice(0, 4)) : mid(t.date) === month,
-  );
+  const period = transactionsForPeriod(d, month, annual, page);
   const income = period
       .filter((t) => t.type === "income")
       .reduce((a, t) => a + t.amount, 0),
@@ -290,14 +222,7 @@ function MoneyApp({ user }: { user: User }) {
     period
       .filter((t) => t.type === "expense" && t.category === c)
       .reduce((a, t) => a + t.amount, 0);
-  const obligations = d.schedules
-    .filter(
-      (s) =>
-        s.type === "expense" &&
-        d.accounts.find((a) => a.id === s.account)?.type === "bank" &&
-        dateFor(month, s.day) >= now(),
-    )
-    .reduce((a, s) => a + s.amount, 0);
+  const obligations = upcomingBankObligations(d, now());
   const safe =
     bankTotal - debt - obligations - d.goals.reduce((a, g) => a + g.monthly, 0);
   function open(type: string, entry: Item | Record<string, any> = {}) {
@@ -334,21 +259,41 @@ function MoneyApp({ user }: { user: User }) {
       next.accounts = [...d.accounts.filter((x) => x.id !== key), base];
     }
     if (modal === "transaction") {
-      if (!f.account || !v) {
-        setError("Choose an account and nonzero amount");
+      if (!/^-?\d+(\.\d{1,2})?$/.test((f.amount || "").trim())) {
+        setError("Enter an amount with no more than two decimal places.");
         return;
       }
       base.amount = v;
       base.date = f.date || now();
       base.type = f.type || "expense";
+      const original = d.transactions.find((transaction) => transaction.id === key);
+      const problem = validateTransaction(base, d.accounts, original);
+      if (problem) {
+        setError(problem);
+        return;
+      }
       next.transactions = [...d.transactions.filter((x) => x.id !== key), base];
     }
     if (modal === "schedule") {
+      if (!/^(\d+)(\.\d{1,2})?$/.test((f.amount || "").trim()) || v <= 0) {
+        setError("Enter a positive monthly amount with no more than two decimal places.");
+        return;
+      }
+      if (!d.accounts.some((account) => account.id === f.account && !account.archived)) {
+        setError("Choose an active account for this schedule.");
+        return;
+      }
+      if ((f.type || "expense") === "income" &&
+          !bank.some((account) => account.id === f.account)) {
+        setError("Recurring income must go to a bank or cash account.");
+        return;
+      }
       base.amount = v;
       base.day = Math.max(1, Math.min(31, Number(f.day) || 1));
       base.start = f.start || now();
       base.type = f.type || "expense";
       next.schedules = [...d.schedules.filter((x) => x.id !== key), base];
+      next = postDue(next, now());
     }
     if (modal === "budget") {
       base.amount = v;
@@ -384,17 +329,60 @@ function MoneyApp({ user }: { user: User }) {
     }
     if (await save(next)) setModal("");
   }
-  async function remove(type: keyof Data, key: string) {
+  async function remove(type: "transactions" | "schedules" | "budgets" | "trips" | "goals", key: string) {
     if (!confirm("Delete this item? Historical transactions will remain."))
       return;
     const arr = d[type];
-    if (Array.isArray(arr))
-      await save({ ...d, [type]: arr.filter((x) => x.id !== key) });
+    if (Array.isArray(arr)) {
+      const removedSource = type === "transactions"
+        ? d.transactions.find((transaction) => transaction.id === key)?.source
+        : undefined;
+      await save({
+        ...d,
+        [type]: arr.filter((x) => x.id !== key),
+        skippedSources:
+          removedSource
+            ? [...new Set([...d.skippedSources, removedSource])]
+            : d.skippedSources,
+      });
+    }
+  }
+  async function archiveAccount(account: Item) {
+    if (bal[account.id] !== 0) {
+      setError("Bring this account's balance to zero before archiving it.");
+      return;
+    }
+    if (d.schedules.some((schedule) => schedule.account === account.id)) {
+      setError("Remove or move this account's recurring entries before archiving it.");
+      return;
+    }
+    if (d.accounts.some((item) => !item.archived && item.type === "card" && item.payFrom === account.id)) {
+      setError("Change the repayment account on linked cards before archiving this bank account.");
+      return;
+    }
+    if (!confirm(`Archive ${account.name}? Its transaction history will stay available.`)) return;
+    await save({
+      ...d,
+      accounts: d.accounts.map((item) =>
+        item.id === account.id ? { ...item, archived: true } : item,
+      ),
+    });
+  }
+  async function restoreAccount(account: Item) {
+    await save({
+      ...d,
+      accounts: d.accounts.map((item) =>
+        item.id === account.id ? { ...item, archived: false } : item,
+      ),
+    });
   }
   async function removeCategorySubgroup(group: string, sub: string) {
     const nextSubs = (d.categories[group] || []).filter((item) => item !== sub);
     const nextCategories = { ...d.categories, [group]: nextSubs };
-    if (!nextSubs.length) {
+    const groupInUse = d.transactions.some((transaction) => transaction.category === group) ||
+      d.schedules.some((schedule) => schedule.category === group) ||
+      d.budgets.some((budget) => budget.category === group);
+    if (!nextSubs.length && !groupInUse) {
       delete nextCategories[group];
     }
     await save({
@@ -442,15 +430,23 @@ function MoneyApp({ user }: { user: User }) {
     );
   }
   const groups = Object.keys(d.categories).map((x) => ({ value: x, label: x })),
-    accountOptions = d.accounts.map((x) => ({ value: x.id, label: x.name })),
+    accountOptions = d.accounts.filter((x) => !x.archived).map((x) => ({ value: x.id, label: x.name })),
     bankOptions = bank.map((x) => ({ value: x.id, label: x.name })),
     cardOptions = cards.map((x) => ({ value: x.id, label: x.name }));
+  const originalTransaction = d.transactions.find((transaction) => transaction.id === f.id);
+  const withArchived = (options: { value: string; label: string }[], selected?: string) => {
+    const account = d.accounts.find((item) => item.id === selected && item.archived);
+    return account && !options.some((option) => option.value === account.id)
+      ? [...options, { value: account.id, label: `${account.name} (archived)` }]
+      : options;
+  };
   function row(
     title: string,
     description: string,
     value: string,
     edit: () => void,
     del?: () => void,
+    actionLabel = "Edit",
   ) {
     return (
       <div className="row">
@@ -462,8 +458,8 @@ function MoneyApp({ user }: { user: User }) {
           <small>{description}</small>
         </div>
         <b>{value}</b>
-        <button className="row-action" onClick={edit} aria-label="Edit">
-          ✎
+        <button className={`row-action ${actionLabel === "Edit" ? "" : "restore"}`} onClick={edit} aria-label={actionLabel}>
+          {actionLabel === "Edit" ? "✎" : actionLabel}
         </button>
         {del && (
           <button className="row-action red" onClick={del} aria-label="Delete">
@@ -627,8 +623,8 @@ function MoneyApp({ user }: { user: User }) {
                   </div>
                   <div className="stats">
                     {[
-                      ["Bank balances", bankTotal, `${bank.length} accounts`],
-                      ["Credit card debt", debt, `${cards.length} cards`],
+                      ["Current bank balances", bankTotal, `${bank.length} accounts · as of today`],
+                      ["Current card debt", debt, `${cards.length} cards · as of today`],
                       [
                         "Recorded income",
                         income,
@@ -694,12 +690,12 @@ function MoneyApp({ user }: { user: User }) {
                         <Lightbulb size={20} />
                       </div>
                       <div className="safe">
-                        <span>Estimated safe to spend</span>
+                        <span>Estimated safe to spend today</span>
                         <strong className={safe < 0 ? "red" : "green"}>
                           {usd(safe)}
                         </strong>
                         <small>
-                          Cash less card debt, upcoming bank-paid bills and
+                          Current cash less card debt, upcoming bills this month and
                           monthly savings reserves.
                         </small>
                       </div>
@@ -771,15 +767,30 @@ function MoneyApp({ user }: { user: User }) {
                           >
                             Edit
                           </button>
-                          <button onClick={() => remove("accounts", a.id)}>
-                            Delete
+                          <button onClick={() => archiveAccount(a)}>
+                            Archive
                           </button>
                         </div>
                       </div>
                     ))}
                   </div>
-                  {!bank.length &&
+                  {!bank.length && !archivedBank.length &&
                     empty("Add a checking or savings account to get started.")}
+                  {archivedBank.length > 0 && (
+                    <section className="panel">
+                      <h2>Archived accounts</h2>
+                      {archivedBank.map((account) => (
+                        <div key={account.id}>{row(
+                          account.name,
+                          "Transaction history is retained",
+                          usd(bal[account.id]),
+                          () => restoreAccount(account),
+                          undefined,
+                          "Restore",
+                        )}</div>
+                      ))}
+                    </section>
+                  )}
                   <div className="notice">
                     Reconcile with an adjustment transaction when your real
                     balance differs.
@@ -801,7 +812,7 @@ function MoneyApp({ user }: { user: User }) {
                         <h2>{a.name}</h2>
                         <strong>{usd(bal[a.id])}</strong>
                         <p>
-                          Statement due: {usd(a.statement || 0)} · Day{" "}
+                          Statement snapshot (manual): {usd(a.statement || 0)} · Day{" "}
                           {a.due || 1}
                         </p>
                         <p>Paid from {name(a.payFrom)}</p>
@@ -825,14 +836,29 @@ function MoneyApp({ user }: { user: User }) {
                           >
                             Pay
                           </button>
-                          <button onClick={() => remove("accounts", a.id)}>
-                            Delete
+                          <button onClick={() => archiveAccount(a)}>
+                            Archive
                           </button>
                         </div>
                       </div>
                     ))}
                   </div>
-                  {!cards.length && empty("Add your first credit card.")}
+                  {!cards.length && !archivedCards.length && empty("Add your first credit card.")}
+                  {archivedCards.length > 0 && (
+                    <section className="panel">
+                      <h2>Archived cards</h2>
+                      {archivedCards.map((account) => (
+                        <div key={account.id}>{row(
+                          account.name,
+                          "Transaction history is retained",
+                          usd(bal[account.id]),
+                          () => restoreAccount(account),
+                          undefined,
+                          "Restore",
+                        )}</div>
+                      ))}
+                    </section>
+                  )}
                 </>
               )}
               {page === "schedules" && (
@@ -909,7 +935,7 @@ function MoneyApp({ user }: { user: User }) {
                         )
                       }
                     >
-                      <Download size={16} /> Export CSV
+                      <Download size={16} /> Export all CSV
                     </button>
                   </div>
                   <section className="panel">
@@ -1102,6 +1128,7 @@ function MoneyApp({ user }: { user: User }) {
                     "Reports & insights",
                     "A clear account of your monthly or yearly financial activity.",
                   )}
+                  <p className="report-period">Period: {annual ? month.slice(0, 4) : month}</p>
                   <div className="toolbar">
                     <div className="month-switch">
                       <button type="button" onClick={() => setMonth(shift(month, -1))} aria-label="Previous month">
@@ -1180,7 +1207,7 @@ function MoneyApp({ user }: { user: User }) {
                     </section>
                     <section className="panel">
                       <h2>Ways to save</h2>
-                      {d.budgets
+                      {!annual && d.budgets
                         .filter((b) => catSpent(b.category) > b.amount)
                         .map((b) => (
                           <div className="insight" key={b.id}>
@@ -1188,6 +1215,9 @@ function MoneyApp({ user }: { user: User }) {
                             {usd(catSpent(b.category) - b.amount)}.
                           </div>
                         ))}
+                      {annual && d.budgets.length > 0 && (
+                        <div className="insight">Switch to Monthly to check spending against monthly category limits.</div>
+                      )}
                       {d.schedules.some((s) => s.type === "expense") && (
                         <div className="insight">
                           Review{" "}
@@ -1277,14 +1307,20 @@ function MoneyApp({ user }: { user: User }) {
                     "Account",
                     "account",
                     "select",
-                    f.type === "payment" ? bankOptions : accountOptions,
+                    withArchived(
+                      f.type === "payment" ? bankOptions : accountOptions,
+                      originalTransaction?.account,
+                    ),
                   )}
                   {["payment", "transfer"].includes(f.type) &&
                     field(
                       "Destination",
                       "to",
                       "select",
-                      f.type === "payment" ? cardOptions : bankOptions,
+                      withArchived(
+                        f.type === "payment" ? cardOptions : bankOptions,
+                        originalTransaction?.to,
+                      ),
                     )}
                   {(!f.type || f.type === "expense") && (
                     <>

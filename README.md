@@ -7,7 +7,9 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 - Bank and credit-card balances; purchases and card repayments recorded separately
 - Income and expenses, transfers, group/subgroup categories
 - Monthly recurring income and charges (posted on next app opening after a due date)
+- Skipped recurring occurrences stay skipped; creating a due schedule posts it immediately
 - Category budgets, monthly savings reserves and safe-to-spend estimate
+- Archived zero-balance accounts retain their transaction history and can be restored
 - Trips with linked expenses and budgets
 - Monthly/yearly dashboard, insights, CSV export, printable reports
 
@@ -42,6 +44,8 @@ cp .env.example .env.local
 # Fill in your Supabase Project URL and public anon/publishable key in .env.local
 npm run dev
 ```
+
+Run the ledger checks with `npm test`.
 
 The GitHub Pages build uses relative asset paths (`base: './'`) so the app works in the `/budget-tracker/` subpath.
 
