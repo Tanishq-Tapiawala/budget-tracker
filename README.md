@@ -19,7 +19,7 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 
 1. Create a free Supabase project at https://supabase.com/dashboard.
 2. Open **SQL Editor** and run [`supabase/schema.sql`](supabase/schema.sql).
-3. Under **Authentication → Providers → Email**, use email/password authentication. Disable public self-signup because this is a one-person app.
+3. Under **Authentication → Providers → Email**, use email/password authentication. The app has a sign-up form. For a private one-person app, create your user and then disable public self-signup in Supabase; the sign-up form will then be rejected by Supabase.
 4. Under **Authentication → Users**, create or invite **your one user** using a private email address. Set the password in the provider's secure interface; never commit it.
 5. Under **Project Settings → API**, copy the Project URL and the **publishable/anon** key. **Never use the `service_role` or secret key in this frontend.**
 6. In Authentication URL configuration, add your GitHub Pages URL to allowed redirect URLs if using email invitation or recovery links.
@@ -57,7 +57,7 @@ The current Site has a **different database**. This migration does not silently 
 
 ## Security and limitations
 
-- The app offers **sign-in only**, with no public signup screen. Disable public signup in Supabase too.
+- The app includes a sign-up form. Whether registration succeeds is controlled by Supabase's public signup setting. Each signed-in user has a separate ledger; the app does not share one household ledger between users.
 - Financial data is scoped to the authenticated user's UUID by row-level security.
 - Each ledger save uses a revision condition to avoid silently overwriting another device's changes. If there is a conflict, reload and retry.
 - Scheduled income and bills are posted on the next visit to the app, **not by a server-side timer**. A schedule posts at most once per month.

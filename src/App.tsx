@@ -262,6 +262,11 @@ function MoneyApp({ user }: { user: User }) {
     }
     let next = { ...d };
     if (modal === "account") {
+      const existing = d.accounts.find((account) => account.id === key);
+      if (existing && existing.type !== f.type) {
+        setError("Account type cannot change after creation. Add a new account instead.");
+        return;
+      }
       base.opening = v;
       base.limit = amount(f.limit);
       base.statement = amount(f.statement);
@@ -376,6 +381,10 @@ function MoneyApp({ user }: { user: User }) {
     if (await save(next)) setModal("");
   }
   async function remove(type: "transactions" | "schedules" | "budgets" | "trips" | "goals", key: string) {
+    if (type === "trips" && d.transactions.some((transaction) => transaction.trip === key)) {
+      setError("This trip has linked expenses. Remove their trip links before deleting it.");
+      return;
+    }
     if (!confirm("Delete this item? Historical transactions will remain."))
       return;
     const arr = d[type];
@@ -802,7 +811,7 @@ function MoneyApp({ user }: { user: User }) {
                         <Landmark size={24} />
                         <small>BANK ACCOUNT</small>
                         <h2>{a.name}</h2>
-                        <strong>{usd(bal[a.id])}</strong>
+                        <strong className={bal[a.id] < 0 ? "red" : "green"}>{usd(bal[a.id])}</strong>
                         <p>Opening: {usd(a.opening)}</p>
                         <div>
                           <button
@@ -855,7 +864,7 @@ function MoneyApp({ user }: { user: User }) {
                         <CreditCard size={24} />
                         <small>CREDIT CARD</small>
                         <h2>{a.name}</h2>
-                        <strong>{usd(bal[a.id])}</strong>
+                        <strong className={bal[a.id] > 0 ? "red" : "green"}>{usd(bal[a.id])}</strong>
                         <p>
                           Statement snapshot (manual): {usd(a.statement || 0)} · Day{" "}
                           {a.due || 1}
@@ -975,7 +984,7 @@ function MoneyApp({ user }: { user: User }) {
                               t.category,
                               t.sub,
                               t.note,
-                              t.trip,
+                              d.trips.find((trip) => trip.id === t.trip)?.name || t.trip,
                             ]),
                           ],
                           "my-money-transactions.csv",
@@ -1318,7 +1327,12 @@ function MoneyApp({ user }: { user: User }) {
               {modal === "account" && (
                 <>
                   {field("Account name", "name")}
-                  {field("Account type", "type", "select", [
+                  {f.id ? (
+                    <label className="field">
+                      <span>Account type</span>
+                      <input value={f.type === "card" ? "Credit card" : "Bank / cash"} readOnly />
+                    </label>
+                  ) : field("Account type", "type", "select", [
                     { value: "bank", label: "Bank / cash" },
                     { value: "card", label: "Credit card" },
                   ])}
@@ -1712,7 +1726,7 @@ export default function App() {
             </button>
           </form>
         )}
-        <small>Shared household wallet · Secure sign-in</small>
+        <small>Private personal wallet · Secure sign-in</small>
       </div>
     </div>
   );
