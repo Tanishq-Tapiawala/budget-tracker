@@ -1101,7 +1101,7 @@ function MoneyApp({ user }: { user: User }) {
                               <button
                                 type="button"
                                 className="subcategory-edit"
-                                onClick={() => open("category", { name: g, sub, subIcon: d.subcategoryIcons[g]?.[sub] || "🏷️" })}
+                                onClick={() => open("category", { name: g, sub, subIcon: d.subcategoryIcons[g]?.[sub] || "🏷️", editingSub: true })}
                                 aria-label={`Edit ${sub} icon`}
                               >✎</button>
                               <button
@@ -1307,7 +1307,7 @@ function MoneyApp({ user }: { user: User }) {
           <div className="dialog">
             <div className="dialog-title">
               <h2>
-                {f.id ? "Edit" : "Add"} {modal}
+                {f.editingSub === "true" ? "Edit subcategory icon" : `${f.id ? "Edit" : "Add"} ${modal}`}
               </h2>
               <button onClick={() => setModal("")}>
                 <X size={20} />
@@ -1371,7 +1371,7 @@ function MoneyApp({ user }: { user: User }) {
                     <>
                       <label className="field">
                         <span>Group</span>
-                        <select value={f.category || ""} onChange={(e) => setF({
+                        <select aria-label="Group" value={f.category || ""} onChange={(e) => setF({
                           ...f,
                           category: e.target.value,
                           sub: "",
@@ -1393,7 +1393,7 @@ function MoneyApp({ user }: { user: User }) {
                       )}
                       <label className="field">
                         <span>Subcategory</span>
-                        <select value={f.sub || ""} disabled={!f.category} onChange={(e) => setF({
+                        <select aria-label="Subcategory" value={f.sub || ""} disabled={!f.category} onChange={(e) => setF({
                           ...f,
                           sub: e.target.value,
                           newSub: "",
@@ -1474,6 +1474,13 @@ function MoneyApp({ user }: { user: User }) {
               )}
               {modal === "category" && (
                 <>
+                  {f.editingSub === "true" ? (
+                    <>
+                      <p className="category-edit-context">{f.name} / {f.sub}</p>
+                      {field("Subgroup icon", "subIcon", "select", subcategoryIconOptions.map((icon) => ({ value: icon, label: icon })))}
+                    </>
+                  ) : (
+                    <>
                   <label className="field">
                     <span>Existing group or new group</span>
                     <select
@@ -1520,6 +1527,8 @@ function MoneyApp({ user }: { user: User }) {
                   </label>
                   {field("Subgroup name", "sub")}
                   {f.sub && field("Subgroup icon", "subIcon", "select", subcategoryIconOptions.map((icon) => ({ value: icon, label: icon })))}
+                    </>
+                  )}
                 </>
               )}
             </div>

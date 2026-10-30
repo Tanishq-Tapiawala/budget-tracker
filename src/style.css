@@ -676,6 +676,44 @@ button:disabled {
   background: linear-gradient(90deg, #1d8a5d, #4fcb86);
 }
 
+.budget-row + .budget-row {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 16px;
+}
+.budget-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.budget-top > span {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.budget-top button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  width: 28px;
+  height: 28px;
+}
+.budget-row .bar > div { background: #df7373; }
+
+.insight {
+  padding: 10px 12px;
+  margin-top: 10px;
+  border-radius: 10px;
+  background: var(--panel-alt);
+  color: var(--ink);
+  line-height: 1.45;
+}
+
 .safe {
   display: grid;
   gap: 8px;
@@ -907,7 +945,7 @@ button:disabled {
 
 .row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1.4fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 14px;
   padding: 14px 0;
@@ -1005,6 +1043,7 @@ button:disabled {
 }
 
 .dialog-error { margin-bottom: 14px; }
+.category-edit-context { color: var(--muted); margin: 0; font-weight: 700; }
 
 .dialog-title {
   display: flex;
@@ -1135,6 +1174,8 @@ button:disabled {
 }
 
 @media (max-width: 620px) {
+  .row { grid-template-columns: 36px minmax(0, 1fr) auto auto; gap: 8px; }
+  .row b { grid-column: 2 / -1; grid-row: 2; }
   .donut-layout { flex-direction: column; align-items: stretch; }
   .donut-chart { align-self: center; }
   .inline-category-fields { grid-template-columns: 1fr; }

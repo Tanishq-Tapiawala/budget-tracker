@@ -30,7 +30,7 @@ export function CashflowChart({
       <div className="chart-scroll">
         <div
           className="flow-chart"
-          style={{ minWidth: count > 6 ? 640 : 360 }}
+          style={{ minWidth: count > 6 ? 640 : 0 }}
           role="img"
           aria-label={points.map((point) => `${point.month}: income ${format(point.income)}, expenses ${format(point.expense)}`).join("; ")}
         >

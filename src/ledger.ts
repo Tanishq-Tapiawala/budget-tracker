@@ -154,6 +154,8 @@ export function postDue(data: Data, today: string) {
   for (const schedule of data.schedules) {
     let month = monthOf(schedule.start || today);
     const end = monthOf(today);
+    const earliestSupported = shiftMonth(end, -119);
+    if (month < earliestSupported) month = earliestSupported;
     let guard = 0;
     while (month <= end && guard++ < 120) {
       const due = dueDate(month, schedule.day);

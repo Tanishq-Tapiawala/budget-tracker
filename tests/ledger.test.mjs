@@ -53,6 +53,12 @@ test("a skipped recurring occurrence does not reappear", () => {
   assert.equal(next.transactions[0].source, "rent:2026-11");
 });
 
+test("old recurring schedules still post the current month", () => {
+  const old = { id: "old", name: "Old bill", type: "expense", amount: 100, account: "checking", day: 1, start: "2010-01-01" };
+  const current = postDue(data({ schedules: [old] }), "2026-10-30");
+  assert.ok(current.transactions.some((item) => item.source === "old:2026-10"));
+});
+
 test("yearly selection does not change monthly transaction and budget pages", () => {
   const ledger = data({ transactions: [
     { id: "oct", date: "2026-10-10" },
