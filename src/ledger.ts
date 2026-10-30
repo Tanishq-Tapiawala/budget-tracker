@@ -87,8 +87,11 @@ export function upcomingBankObligations(data: Data, today: string) {
     .filter((schedule) => {
       const account = data.accounts.find((item) => item.id === schedule.account);
       const due = dueDate(currentMonth, schedule.day);
+      const source = `${schedule.id}:${currentMonth}`;
       return schedule.type === "expense" && account?.type === "bank" &&
-        !account.archived && due >= today && due >= (schedule.start || "0000-00-00");
+        !account.archived && due >= today && due >= (schedule.start || "0000-00-00") &&
+        !data.transactions.some((transaction) => transaction.source === source) &&
+        !data.skippedSources.includes(source);
     })
     .reduce((sum, schedule) => sum + schedule.amount, 0);
 }

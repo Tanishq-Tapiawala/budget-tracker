@@ -78,6 +78,15 @@ test("upcoming obligations use today's month and exclude future-starting schedul
   assert.equal(upcomingBankObligations(ledger, "2026-10-31"), 0);
 });
 
+test("a recurring bill is not subtracted twice on its due date", () => {
+  const schedule = { id: "rent", type: "expense", amount: 1000, account: "checking", day: 30, start: "2026-01-01" };
+  assert.equal(upcomingBankObligations(data({ schedules: [schedule] }), "2026-10-30"), 1000);
+  assert.equal(upcomingBankObligations(data({ schedules: [schedule], transactions: [
+    { id: "posted", type: "expense", amount: 1000, account: "checking", source: "rent:2026-10" },
+  ] }), "2026-10-30"), 0);
+  assert.equal(upcomingBankObligations(data({ schedules: [schedule], skippedSources: ["rent:2026-10"] }), "2026-10-30"), 0);
+});
+
 test("income and expense chart totals are grouped by month", () => {
   const points = monthlyFlow([
     { id: "a", date: "2026-09-03", type: "income", amount: 1000 },
