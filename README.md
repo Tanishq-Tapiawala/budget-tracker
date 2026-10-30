@@ -9,10 +9,12 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 - Monthly recurring income and charges (posted on next app opening after a due date)
 - Skipped recurring occurrences stay skipped; creating a due schedule posts it immediately
 - Category budgets, monthly savings reserves and safe-to-spend estimate
+- Safe-to-spend subtracts current card debt, upcoming bank and card charges this month, and monthly savings reserves without counting a posted charge twice
 - Income/expense trend charts and category spending charts on the dashboard and reports
 - Create category groups and subcategories, with icons, while recording an expense
 - Archived zero-balance accounts retain their transaction history and can be restored
 - Trips with linked expenses and budgets
+- Manual transactions use actual dates through today; future plans belong in recurring schedules
 - Monthly/yearly dashboard, insights, CSV export, printable reports
 
 ## 1. Create the Supabase project
@@ -60,6 +62,8 @@ The current Site has a **different database**. This migration does not silently 
 - The app includes a sign-up form. Whether registration succeeds is controlled by Supabase's public signup setting. Each signed-in user has a separate ledger; the app does not share one household ledger between users.
 - Financial data is scoped to the authenticated user's UUID by row-level security.
 - Each ledger save uses a revision condition to avoid silently overwriting another device's changes. If there is a conflict, reload and retry.
+- The save indicator reflects the server response. Failed saves keep forms open; other failed actions offer a retry.
 - Scheduled income and bills are posted on the next visit to the app, **not by a server-side timer**. A schedule posts at most once per month.
 - Statement amounts are manually managed and reports use browser Print → Save as PDF.
+- Safe-to-spend is a planning estimate for the current month; it does not predict unscheduled spending or future income.
 - This remains an early personal-finance app. Check calculations and use backups before treating it as a financial source of truth.

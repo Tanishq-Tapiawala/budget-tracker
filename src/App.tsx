@@ -27,7 +27,7 @@ import {
   supabase,
 } from "./supabase";
 import type { User } from "@supabase/supabase-js";
-import { balances, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction, withCategory } from "./ledger";
+import { balances, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "./ledger";
 import type { Data, Item } from "./ledger";
 import { CashflowChart, CategoryDonut } from "./charts";
 const blank: Data = {
@@ -94,6 +94,10 @@ const shift = (m: string, n: number) => {
   return new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7);
 };
 const amount = (v: any) => Math.round((Number(v) || 0) * 100);
+const errorMessage = (value: unknown) =>
+  value && typeof value === "object" && "message" in value && typeof value.message === "string"
+    ? value.message
+    : String(value);
 const id = () => crypto.randomUUID();
 const download = (rows: any[][], name: string) => {
   const text = rows
@@ -116,6 +120,9 @@ function MoneyApp({ user }: { user: User }) {
     [ready, setReady] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
+    [saveState, setSaveState] = useState<"saved" | "saving" | "failed" | "conflict">("saved"),
+    [failedSave, setFailedSave] = useState<Data | null>(null),
+    [loadAttempt, setLoadAttempt] = useState(0),
     [page, setPage] = useState("dashboard"),
     [mobile, setMobile] = useState(false),
     [month, setMonth] = useState(() => mid(now())),
@@ -145,6 +152,8 @@ function MoneyApp({ user }: { user: User }) {
     };
   }, [user.id]);
   useEffect(() => {
+    setReady(false);
+    setError("");
     void (async () => {
       try {
         const { data, error } = await supabase
@@ -160,15 +169,20 @@ function MoneyApp({ user }: { user: User }) {
           subcategoryIcons: data.payload.subcategoryIcons || {},
         } : blank);
         setRev(data?.revision ?? 0);
+        setSaveState("saved");
+        setFailedSave(null);
         setReady(true);
       } catch (e) {
-        setError(String(e));
+        setError(`Unable to load your ledger. ${errorMessage(e)}`);
       }
     })();
-  }, [user.id]);
+  }, [user.id, loadAttempt]);
   async function save(next: Data) {
     setBusy(true);
+    setSaveState("saving");
+    setFailedSave(null);
     setError("");
+    let conflict = false;
     try {
       let result;
       if (rev === 0) {
@@ -191,15 +205,20 @@ function MoneyApp({ user }: { user: User }) {
           .maybeSingle();
       }
       if (result.error) throw result.error;
-      if (!result.data)
+      if (!result.data) {
+        conflict = true;
         throw Error(
           "Another device changed your data. Please refresh before editing.",
         );
+      }
       setD(next);
       setRev(result.data.revision);
+      setSaveState("saved");
       return true;
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
+      setSaveState(conflict ? "conflict" : "failed");
+      if (!conflict && !modal) setFailedSave(next);
       return false;
     } finally {
       setBusy(false);
@@ -210,7 +229,8 @@ function MoneyApp({ user }: { user: User }) {
     const next = postDue(d, now());
     if (next !== d) void save(next);
   }, [ready]);
-  const bal = useMemo(() => balances(d), [d]);
+  const today = now();
+  const bal = useMemo(() => balances(d, today), [d, today]);
   const name = (key: string) =>
     d.accounts.find((a) => a.id === key)?.name || "Unknown";
   const bank = d.accounts.filter((a) => a.type === "bank" && !a.archived),
@@ -230,9 +250,8 @@ function MoneyApp({ user }: { user: User }) {
     period
       .filter((t) => t.type === "expense" && t.category === c)
       .reduce((a, t) => a + t.amount, 0);
-  const obligations = upcomingBankObligations(d, now());
-  const safe =
-    bankTotal - debt - obligations - d.goals.reduce((a, g) => a + g.monthly, 0);
+  const pendingExpenses = upcomingExpenseSchedules(d, today);
+  const safe = safeToSpend(d, today);
   function open(type: string, entry: Item | Record<string, any> = {}) {
     setError("");
     setModal(type);
@@ -256,7 +275,7 @@ function MoneyApp({ user }: { user: User }) {
     const key = f.id || id(),
       v = amount(f.amount),
       base: any = { ...f, id: key };
-    if (!f.name && ["account", "schedule", "trip", "goal"].includes(modal)) {
+    if (!f.name?.trim() && ["account", "schedule", "trip", "goal"].includes(modal)) {
       setError("Name is required");
       return;
     }
@@ -278,7 +297,12 @@ function MoneyApp({ user }: { user: User }) {
         return;
       }
       base.amount = v;
-      base.date = f.date || now();
+      base.date = f.date || today;
+      const dateProblem = validateManualDate(base.date, today);
+      if (dateProblem) {
+        setError(dateProblem);
+        return;
+      }
       base.type = f.type || "expense";
       if (base.type === "expense") {
         const newGroup = f.category === "__new__";
@@ -356,15 +380,43 @@ function MoneyApp({ user }: { user: User }) {
       next = postDue(next, now());
     }
     if (modal === "budget") {
+      if (!d.categories[f.category]) {
+        setError("Choose a category for this budget.");
+        return;
+      }
+      const problem = validateAmount(f.amount || "", "monthly limit");
+      if (problem) {
+        setError(problem);
+        return;
+      }
       base.amount = v;
       next.budgets = [...d.budgets.filter((x) => x.id !== key), base];
     }
     if (modal === "goal") {
+      const problem = validateAmount(f.amount || "", "savings target") ||
+        validateAmount(f.monthly || "0", "monthly reserve", true);
+      if (problem) {
+        setError(problem);
+        return;
+      }
       base.amount = v;
       base.monthly = amount(f.monthly);
       next.goals = [...d.goals.filter((x) => x.id !== key), base];
     }
     if (modal === "trip") {
+      const problem = validateAmount(f.budget || "0", "trip budget", true);
+      if (problem) {
+        setError(problem);
+        return;
+      }
+      if (Boolean(f.start) !== Boolean(f.end)) {
+        setError("Enter both trip dates or leave both blank.");
+        return;
+      }
+      if (f.start && f.end && f.end < f.start) {
+        setError("Trip end date must be on or after the start date.");
+        return;
+      }
       base.budget = amount(f.budget);
       next.trips = [...d.trips.filter((x) => x.id !== key), base];
     }
@@ -477,6 +529,7 @@ function MoneyApp({ user }: { user: User }) {
           <input
             type={type}
             step={type === "number" ? "0.01" : undefined}
+            max={type === "date" && modal === "transaction" ? today : undefined}
             value={f[key] || ""}
             onChange={(e) => setF({ ...f, [key]: e.target.value })}
           />
@@ -622,20 +675,30 @@ function MoneyApp({ user }: { user: User }) {
           <span>
             Workspace <i>/</i> {nav.find((n) => n.id === page)?.label}
           </span>
-          <div className="top-status">
-            {busy ? "Saving…" : ready ? "Saved securely" : "Loading…"}
+          <div className={`top-status ${saveState === "failed" || saveState === "conflict" || (!ready && error) ? "failed" : ""}`}>
+            {!ready ? (error ? "Load failed" : "Loading…") : busy ? "Saving…" : saveState === "conflict" ? "Save conflict" : saveState === "failed" ? "Not saved" : "Saved securely"}
             <span className="avatar">M</span>
           </div>
         </header>
         <div className="content">
-          {error && (
-            <div className="error">
-              {error}
-              <button onClick={() => setError("")}>Dismiss</button>
+          {error && !modal && (
+            <div className="error" role="alert">
+              <span>{error}</span>
+              <div className="error-actions">
+                {failedSave && !modal && <button disabled={busy} onClick={() => void save(failedSave)}>Retry save</button>}
+                {saveState === "conflict" && <button onClick={() => {
+                  if (confirm("Reload the latest ledger? Changes in the open form will be lost.")) window.location.reload();
+                }}>Reload latest</button>}
+                <button onClick={() => setError("")}>Dismiss</button>
+              </div>
             </div>
           )}
           {!ready ? (
-            empty("Loading your private finances…")
+            error ? <div className="empty">
+              <Wallet size={27} />
+              <p>Your ledger could not be loaded.</p>
+              <button className="secondary" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>Retry loading</button>
+            </div> : empty("Loading your private finances…")
           ) : (
             <>
               {page === "dashboard" && (
@@ -750,9 +813,8 @@ function MoneyApp({ user }: { user: User }) {
                           monthly savings reserves.
                         </small>
                       </div>
-                      <h3>Upcoming monthly commitments</h3>
-                      {d.schedules
-                        .filter((s) => s.type === "expense")
+                      <h3>Upcoming charges this month</h3>
+                      {pendingExpenses
                         .slice(0, 5)
                         .map((s) => (
                           <div className="due" key={s.id}>
@@ -764,8 +826,8 @@ function MoneyApp({ user }: { user: User }) {
                             <strong className="red">{usd(s.amount)}</strong>
                           </div>
                         ))}
-                      {!d.schedules.length &&
-                        empty("Set recurring bills to forecast commitments.")}
+                      {!pendingExpenses.length &&
+                        empty("No more scheduled charges this month.")}
                     </section>
                   </div>
                   <section className="panel">

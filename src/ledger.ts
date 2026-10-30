@@ -81,25 +81,31 @@ export function categoryTotals(transactions: Item[]) {
     .sort((a, b) => b.amount - a.amount);
 }
 
-export function upcomingBankObligations(data: Data, today: string) {
+export function upcomingExpenseSchedules(data: Data, today: string) {
   const currentMonth = monthOf(today);
   return data.schedules
     .filter((schedule) => {
       const account = data.accounts.find((item) => item.id === schedule.account);
       const due = dueDate(currentMonth, schedule.day);
       const source = `${schedule.id}:${currentMonth}`;
-      return schedule.type === "expense" && account?.type === "bank" &&
+      return schedule.type === "expense" && (account?.type === "bank" || account?.type === "card") &&
         !account.archived && due >= today && due >= (schedule.start || "0000-00-00") &&
         !data.transactions.some((transaction) => transaction.source === source) &&
         !data.skippedSources.includes(source);
     })
+    .sort((a, b) => a.day - b.day);
+}
+
+export function upcomingExpenseObligations(data: Data, today: string) {
+  return upcomingExpenseSchedules(data, today)
     .reduce((sum, schedule) => sum + schedule.amount, 0);
 }
 
-export function balances(data: Data) {
+export function balances(data: Data, through?: string) {
   const result: Record<string, number> = {};
   data.accounts.forEach((account) => (result[account.id] = account.opening || 0));
   data.transactions.forEach((transaction) => {
+    if (through && transaction.date && transaction.date > through) return;
     if (!(transaction.account in result)) return;
     if (transaction.type === "income" || transaction.type === "adjustment")
       result[transaction.account] += transaction.amount;
@@ -115,6 +121,41 @@ export function balances(data: Data) {
     }
   });
   return result;
+}
+
+export function safeToSpend(data: Data, today: string) {
+  const current = balances(data, today);
+  const upcoming = upcomingExpenseSchedules(data, today);
+  const active = data.accounts.filter((account) => !account.archived);
+  const cash = active.filter((account) => account.type === "bank")
+    .reduce((sum, account) => sum + (current[account.id] || 0), 0);
+  const bankCharges = upcoming
+    .filter((schedule) => active.some((account) => account.id === schedule.account && account.type === "bank"))
+    .reduce((sum, schedule) => sum + schedule.amount, 0);
+  const projectedCardDebt = active.filter((account) => account.type === "card")
+    .reduce((sum, account) => {
+      const pending = upcoming.filter((schedule) => schedule.account === account.id)
+        .reduce((total, schedule) => total + schedule.amount, 0);
+      return sum + Math.max(0, (current[account.id] || 0) + pending);
+    }, 0);
+  const reserves = data.goals.reduce((sum, goal) => sum + Math.max(0, goal.monthly || 0), 0);
+  return cash - bankCharges - projectedCardDebt - reserves;
+}
+
+export function validateAmount(raw: string, label: string, allowZero = false): string | null {
+  const value = raw.trim();
+  const cents = Math.round(Number(value) * 100);
+  if (!/^\d+(\.\d{1,2})?$/.test(value) || !Number.isSafeInteger(cents) || (!allowZero && cents === 0))
+    return `Enter a ${allowZero ? "nonnegative" : "positive"} ${label} with no more than two decimal places.`;
+  return null;
+}
+
+export function validateManualDate(date: string, today: string): string | null {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date)
+    return "Choose a valid transaction date.";
+  if (date > today) return "Future-dated transactions are not supported. Use a recurring schedule for planned activity.";
+  return null;
 }
 
 export function validateTransaction(

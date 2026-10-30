@@ -205,6 +205,7 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 12px 14px;
   border-radius: 10px;
@@ -213,6 +214,12 @@ button:disabled {
   border: 1px solid rgba(204, 58, 58, 0.15);
   font-size: 12px;
   font-weight: 600;
+}
+
+.error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .error button {
@@ -360,6 +367,10 @@ button:disabled {
   align-items: center;
   gap: 18px;
   font-weight: 700;
+}
+
+.top-status.failed {
+  color: var(--red);
 }
 
 .avatar {

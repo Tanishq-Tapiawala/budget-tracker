@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { balances, categoryTotals, monthlyFlow, postDue, transactionsForPeriod, upcomingBankObligations, validateTransaction, withCategory } from "../src/ledger.ts";
+import { balances, categoryTotals, monthlyFlow, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "../src/ledger.ts";
 
 const accounts = [
   { id: "checking", name: "Checking", type: "bank", opening: 10000 },
@@ -74,17 +74,57 @@ test("upcoming obligations use today's month and exclude future-starting schedul
     { id: "rent", type: "expense", amount: 1000, account: "checking", day: 30, start: "2026-01-01" },
     { id: "future", type: "expense", amount: 2000, account: "checking", day: 30, start: "2026-11-01" },
   ] });
-  assert.equal(upcomingBankObligations(ledger, "2026-10-29"), 1000);
-  assert.equal(upcomingBankObligations(ledger, "2026-10-31"), 0);
+  assert.equal(upcomingExpenseObligations(ledger, "2026-10-29"), 1000);
+  assert.equal(upcomingExpenseObligations(ledger, "2026-10-31"), 0);
 });
 
 test("a recurring bill is not subtracted twice on its due date", () => {
   const schedule = { id: "rent", type: "expense", amount: 1000, account: "checking", day: 30, start: "2026-01-01" };
-  assert.equal(upcomingBankObligations(data({ schedules: [schedule] }), "2026-10-30"), 1000);
-  assert.equal(upcomingBankObligations(data({ schedules: [schedule], transactions: [
+  assert.equal(upcomingExpenseObligations(data({ schedules: [schedule] }), "2026-10-30"), 1000);
+  assert.equal(upcomingExpenseObligations(data({ schedules: [schedule], transactions: [
     { id: "posted", type: "expense", amount: 1000, account: "checking", source: "rent:2026-10" },
   ] }), "2026-10-30"), 0);
-  assert.equal(upcomingBankObligations(data({ schedules: [schedule], skippedSources: ["rent:2026-10"] }), "2026-10-30"), 0);
+  assert.equal(upcomingExpenseObligations(data({ schedules: [schedule], skippedSources: ["rent:2026-10"] }), "2026-10-30"), 0);
+});
+
+test("safe-to-spend stays steady when bank and card schedules post", () => {
+  const ledger = data({ schedules: [
+    { id: "rent", type: "expense", amount: 1200, account: "checking", day: 30, start: "2026-10-01" },
+    { id: "subscription", type: "expense", amount: 500, account: "card", day: 30, start: "2026-10-01" },
+  ] });
+  ledger.goals = [{ id: "reserve", monthly: 300 }];
+  const before = safeToSpend(ledger, "2026-10-29");
+  const afterPosting = postDue(ledger, "2026-10-30");
+  assert.deepEqual(upcomingExpenseSchedules(ledger, "2026-10-29").map((schedule) => schedule.id), ["rent", "subscription"]);
+  assert.equal(upcomingExpenseObligations(ledger, "2026-10-29"), 1700);
+  assert.deepEqual(upcomingExpenseSchedules(afterPosting, "2026-10-30"), []);
+  assert.equal(upcomingExpenseObligations(afterPosting, "2026-10-30"), 0);
+  assert.equal(safeToSpend(afterPosting, "2026-10-30"), before);
+  const withCardCredit = data({ ...ledger, accounts: accounts.map((account) =>
+    account.id === "card" ? { ...account, opening: -300 } : account),
+  });
+  const creditBefore = safeToSpend(withCardCredit, "2026-10-29");
+  const creditAfter = safeToSpend(postDue(withCardCredit, "2026-10-30"), "2026-10-30");
+  assert.equal(creditAfter, creditBefore);
+});
+
+test("future-dated entries do not change today's balance", () => {
+  const ledger = data({ transactions: [
+    { id: "today", type: "expense", amount: 1000, account: "checking", date: "2026-10-30" },
+    { id: "future", type: "expense", amount: 2000, account: "checking", date: "2026-11-01" },
+  ] });
+  assert.equal(balances(ledger, "2026-10-30").checking, 9000);
+  assert.equal(balances(ledger, "2026-11-01").checking, 7000);
+  assert.match(validateManualDate("2026-11-01", "2026-10-30"), /Future-dated/);
+  assert.match(validateManualDate("2026-02-30", "2026-10-30"), /valid transaction date/);
+});
+
+test("money limits and reserves require valid cents", () => {
+  assert.match(validateAmount("-10", "monthly reserve", true), /nonnegative/);
+  assert.match(validateAmount("0", "monthly limit"), /positive/);
+  assert.match(validateAmount("1.234", "savings target"), /two decimal places/);
+  assert.equal(validateAmount("0", "monthly reserve", true), null);
+  assert.equal(validateAmount("100.25", "monthly limit"), null);
 });
 
 test("income and expense chart totals are grouped by month", () => {
