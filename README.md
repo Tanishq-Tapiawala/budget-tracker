@@ -5,12 +5,15 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 ## Features
 
 - Bank and credit-card balances; purchases and card repayments recorded separately
-- Card purchases update current debt. Use **Set statement** when a billing cycle closes to copy current debt into a dated statement snapshot; later purchases leave that snapshot unchanged.
+- Card purchases update current debt. Use **Set statement** when a billing cycle closes to copy current debt into a dated statement balance. Later purchases leave it unchanged; linked repayments reduce the remaining amount due.
 - Income and expenses, transfers, group/subgroup categories
 - Monthly recurring income and charges (posted on next app opening after a due date)
-- Skipped recurring occurrences stay skipped; creating a due schedule posts it immediately
+- Link a manual income or expense to its recurring month to avoid duplicate posting, or skip a month in Planning. Creating a backdated schedule previews the number of past entries before posting.
+- Card payment reminders show the statement amount still due and open a repayment form; they never post an expense automatically.
 - Category budgets, savings goals with monthly contributions, and a safe-to-spend estimate
 - Mark bank accounts as savings to exclude their balance from safe to spend. Link transfers into or out of savings to a goal to track net contributions; transfers are not expenses.
+- Goal progress is a record of starting allocations and linked transfers. The goals screen separately shows actual savings account balances and warns when recorded allocations exceed them.
+- Opening balances are locked after an account has transactions. Use a balance adjustment to correct an existing account.
 - Safe-to-spend subtracts current card debt, upcoming spendable-bank and card charges this month, and the unfulfilled portion of monthly savings reserves without counting posted charges or contributions twice
 - Income/expense trend charts show exact amounts for a selected month; reports include a printable monthly amount table
 - Create category groups and subcategories, with icons, while recording an expense
@@ -66,8 +69,8 @@ The current Site has a **different database**. This migration does not silently 
 - Each ledger save uses a revision condition to avoid silently overwriting another device's changes. If there is a conflict, reload and retry.
 - The save indicator reflects the server response. Failed saves keep forms open; other failed actions offer a retry.
 - Scheduled income and bills are posted on the next visit to the app, **not by a server-side timer**. A schedule posts at most once per month.
-- Statement snapshots are manually captured or edited; the app does not know issuer closing dates, fees, or adjustments. Reports use browser Print → Save as PDF.
+- Statement balances are manually captured or edited; the app does not know issuer closing dates, fees, or adjustments. Repayments made after a statement is set are linked to that statement, and older entries without a statement ID need a new capture to track remaining due. Reports use browser Print → Save as PDF.
 - Safe-to-spend is a planning estimate for the current month; it does not predict unscheduled spending or future income.
-- Savings transfers are records in this app. Make the actual transfer with your bank separately. Goal progress uses the amount already saved that you enter plus linked transfers; an unlinked transfer does not count toward a goal.
+- Savings transfers are records in this app. Make the actual transfer with your bank separately. Goal progress uses the starting allocation you enter plus linked transfers; unlinked account activity does not change a goal's recorded allocation.
 - Deleting a goal removes its future monthly reserve but retains historical transfers and their recorded savings amounts in reports.
 - This remains an early personal-finance app. Check calculations and use backups before treating it as a financial source of truth.

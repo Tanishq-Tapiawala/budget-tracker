@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { balances, captureCardStatement, categoryTotals, goalProgress, monthlyFlow, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "../src/ledger.ts";
+import { balances, captureCardStatement, cardPaymentReminders, cardStatementDueDate, categoryTotals, goalProgress, monthlyFlow, occurrenceSource, postDue, remainingStatementDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateDay, validateManualDate, validateSignedAmount, validateTransaction, withCategory } from "../src/ledger.ts";
 
 const accounts = [
   { id: "checking", name: "Checking", type: "bank", opening: 10000 },
@@ -53,6 +53,7 @@ test("card statement captures current debt through today and remains a snapshot"
   const captured = captureCardStatement(ledger, "card", "2026-10-30");
   assert.equal(captured.accounts.find((account) => account.id === "card").statement, 13000);
   assert.equal(captured.accounts.find((account) => account.id === "card").statementDate, "2026-10-30");
+  assert.ok(captured.accounts.find((account) => account.id === "card").statementId);
   assert.equal(captured.accounts.find((account) => account.id === "checking"), ledger.accounts.find((account) => account.id === "checking"));
   assert.equal(captureCardStatement(captured, "checking", "2026-10-30"), captured);
   assert.equal(balances(captured, "2026-11-01").card, 16000);
@@ -61,6 +62,40 @@ test("card statement captures current debt through today and remains a snapshot"
     account.id === "card" ? { ...account, opening: -1000 } : account),
   });
   assert.equal(captureCardStatement(credit, "card", "2026-10-30").accounts.find((account) => account.id === "card").statement, 0);
+});
+
+test("repayments reduce only the statement they are linked to", () => {
+  const card = { ...accounts[2], statement: 10000, statementDate: "2026-10-10", statementId: "oct", due: 30 };
+  const ledger = data({ accounts: [accounts[0], accounts[1], card], transactions: [
+    { id: "old", type: "payment", to: "card", amount: 2000, date: "2026-10-01", statementId: "oct" },
+    { id: "current", type: "payment", to: "card", amount: 3000, date: "2026-10-20", statementId: "oct" },
+    { id: "other", type: "payment", to: "card", amount: 1000, date: "2026-10-22", statementId: "sep" },
+  ] });
+  assert.equal(remainingStatementDue(ledger, "card", "2026-10-21"), 7000);
+  assert.equal(remainingStatementDue(ledger, "card", "2026-10-30"), 7000);
+  assert.equal(remainingStatementDue(data(), "card", "2026-10-30"), null);
+});
+
+test("card reminders show statement due without posting spending", () => {
+  const card = { ...accounts[2], statement: 10000, statementDate: "2026-10-01", statementId: "oct", due: 30 };
+  const ledger = data({ accounts: [accounts[0], accounts[1], card], schedules: [
+    { id: "reminder", type: "card_reminder", account: "card", start: "2026-10-01" },
+  ] });
+  assert.equal(cardPaymentReminders(ledger, "2026-10-20").length, 1);
+  assert.equal(cardStatementDueDate(card), "2026-10-30");
+  assert.equal(cardStatementDueDate({ ...card, statementDate: "2026-10-31" }), "2026-11-30");
+  assert.equal(postDue(ledger, "2026-10-30"), ledger);
+  assert.equal(safeToSpend(ledger, "2026-10-20"), 10000);
+  const paid = data({ ...ledger, transactions: [
+    { id: "pay", type: "payment", account: "checking", to: "card", amount: 10000,
+      date: "2026-10-20", statementId: "oct" },
+  ] });
+  assert.equal(cardPaymentReminders(paid, "2026-10-20").length, 0);
+  assert.equal(remainingStatementDue(paid, "card", "2026-10-20"), 0);
+  const nextMonth = data({ ...ledger, accounts: [accounts[0], accounts[1],
+    { ...card, statementDate: "2026-10-31", due: 15 }] });
+  assert.equal(cardPaymentReminders(nextMonth, "2026-10-31").length, 1);
+  assert.equal(cardStatementDueDate(nextMonth.accounts[2]), "2026-11-15");
 });
 
 test("a skipped recurring occurrence does not reappear", () => {
@@ -73,6 +108,16 @@ test("a skipped recurring occurrence does not reappear", () => {
   const next = postDue(data({ schedules: [schedule], skippedSources: ["rent:2026-10"] }), "2026-11-02");
   assert.equal(next.transactions.length, 1);
   assert.equal(next.transactions[0].source, "rent:2026-11");
+});
+
+test("a linked manual payment replaces the recurring occurrence for its month", () => {
+  const schedule = { id: "rent", name: "Rent", type: "expense", amount: 1000, account: "checking", day: 30, start: "2026-10-01" };
+  const manual = { id: "paid", type: "expense", amount: 900, account: "checking", date: "2026-10-20",
+    source: occurrenceSource("rent", "2026-10"), linkedManually: true };
+  const ledger = data({ schedules: [schedule], transactions: [manual] });
+  assert.equal(postDue(ledger, "2026-10-30"), ledger);
+  assert.equal(upcomingExpenseSchedules(ledger, "2026-10-20").length, 0);
+  assert.equal(balances(ledger, "2026-10-30").checking, 9100);
 });
 
 test("old recurring schedules still post the current month", () => {
@@ -147,6 +192,11 @@ test("money limits and reserves require valid cents", () => {
   assert.match(validateAmount("1.234", "savings target"), /two decimal places/);
   assert.equal(validateAmount("0", "monthly reserve", true), null);
   assert.equal(validateAmount("100.25", "monthly limit"), null);
+  assert.equal(validateSignedAmount("-30.25", "opening balance"), null);
+  assert.match(validateSignedAmount("1.234", "opening balance"), /two decimal places/);
+  assert.match(validateSignedAmount("Infinity", "opening balance"), /valid/);
+  assert.equal(validateDay("31", "due day"), null);
+  assert.match(validateDay("32", "due day"), /1 to 31/);
 });
 
 test("income and expense chart totals are grouped by month", () => {

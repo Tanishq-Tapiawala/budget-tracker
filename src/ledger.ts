@@ -43,11 +43,12 @@ const shiftMonth = (month: string, count: number) => {
   const [year, number] = month.split("-").map(Number);
   return new Date(Date.UTC(year, number - 1 + count, 1)).toISOString().slice(0, 7);
 };
-const dueDate = (month: string, day: number) => {
+export const dueDate = (month: string, day: number) => {
   const [year, number] = month.split("-").map(Number);
   const lastDay = new Date(Date.UTC(year, number, 0)).getUTCDate();
   return `${month}-${String(Math.min(Math.max(1, day), lastDay)).padStart(2, "0")}`;
 };
+export const occurrenceSource = (scheduleId: string, month: string) => `${scheduleId}:${month}`;
 
 export function transactionsForPeriod(data: Data, month: string, annual: boolean, page: string) {
   const yearly = annual && (page === "dashboard" || page === "reports");
@@ -100,7 +101,7 @@ export function upcomingExpenseSchedules(data: Data, today: string) {
     .filter((schedule) => {
       const account = data.accounts.find((item) => item.id === schedule.account);
       const due = dueDate(currentMonth, schedule.day);
-      const source = `${schedule.id}:${currentMonth}`;
+      const source = occurrenceSource(schedule.id, currentMonth);
       return schedule.type === "expense" && (account?.type === "bank" || account?.type === "card") &&
         !account.archived && due >= today && due >= (schedule.start || "0000-00-00") &&
         !data.transactions.some((transaction) => transaction.source === source) &&
@@ -143,8 +144,42 @@ export function captureCardStatement(data: Data, cardId: string, today: string):
   return {
     ...data,
     accounts: data.accounts.map((account) =>
-      account.id === cardId ? { ...account, statement, statementDate: today } : account),
+      account.id === cardId ? { ...account, statement, statementDate: today,
+        statementId: crypto.randomUUID(), statementSource: "captured" } : account),
   };
+}
+
+export function remainingStatementDue(data: Data, cardId: string, through: string): number | null {
+  const card = data.accounts.find((account) => account.id === cardId && account.type === "card");
+  if (!card?.statementId) return null;
+  const paid = data.transactions.filter((transaction) =>
+    transaction.type === "payment" && transaction.to === cardId &&
+    transaction.statementId === card.statementId && transaction.date >= card.statementDate && transaction.date <= through,
+  ).reduce((sum, transaction) => sum + transaction.amount, 0);
+  return Math.max(0, (card.statement || 0) - paid);
+}
+
+export function cardStatementDueDate(card: Item): string | null {
+  if (!card.statementDate) return null;
+  const month = monthOf(card.statementDate);
+  const currentDue = dueDate(month, card.due || 1);
+  return currentDue >= card.statementDate ? currentDue : dueDate(shiftMonth(month, 1), card.due || 1);
+}
+
+export function cardPaymentReminders(data: Data, today: string) {
+  return data.schedules.filter((schedule) => {
+    if (schedule.type !== "card_reminder") return false;
+    const card = data.accounts.find((account) => account.id === schedule.account);
+    if (card?.type !== "card" || card.archived) return false;
+    const due = cardStatementDueDate(card);
+    return Boolean(due && due >= (schedule.start || "0000-00-00") &&
+      !data.skippedSources.includes(occurrenceSource(schedule.id, monthOf(due))) &&
+      (remainingStatementDue(data, card.id, today) || 0) > 0);
+  }).sort((a, b) => {
+    const first = data.accounts.find((account) => account.id === a.account);
+    const second = data.accounts.find((account) => account.id === b.account);
+    return (first ? cardStatementDueDate(first) || "" : "").localeCompare(second ? cardStatementDueDate(second) || "" : "");
+  });
 }
 
 export function safeToSpend(data: Data, today: string) {
@@ -175,6 +210,19 @@ export function validateAmount(raw: string, label: string, allowZero = false): s
   const cents = Math.round(Number(value) * 100);
   if (!/^\d+(\.\d{1,2})?$/.test(value) || !Number.isSafeInteger(cents) || (!allowZero && cents === 0))
     return `Enter a ${allowZero ? "nonnegative" : "positive"} ${label} with no more than two decimal places.`;
+  return null;
+}
+
+export function validateSignedAmount(raw: string, label: string): string | null {
+  const value = raw.trim();
+  const cents = Math.round(Number(value) * 100);
+  if (!/^-?\d+(\.\d{1,2})?$/.test(value) || !Number.isSafeInteger(cents))
+    return `Enter a valid ${label} with no more than two decimal places.`;
+  return null;
+}
+
+export function validateDay(raw: string, label: string): string | null {
+  if (!/^(?:[1-9]|[12]\d|3[01])$/.test(raw.trim())) return `${label} must be a whole number from 1 to 31.`;
   return null;
 }
 
@@ -237,6 +285,7 @@ export function postDue(data: Data, today: string) {
     ...data.skippedSources,
   ]);
   for (const schedule of data.schedules) {
+    if (schedule.type !== "income" && schedule.type !== "expense") continue;
     let month = monthOf(schedule.start || today);
     const end = monthOf(today);
     const earliestSupported = shiftMonth(end, -119);
@@ -244,7 +293,7 @@ export function postDue(data: Data, today: string) {
     let guard = 0;
     while (month <= end && guard++ < 120) {
       const due = dueDate(month, schedule.day);
-      const source = `${schedule.id}:${month}`;
+      const source = occurrenceSource(schedule.id, month);
       if (due >= (schedule.start || "0000-00-00") && due <= today && !known.has(source)) {
         transactions.push({
           id: crypto.randomUUID(),

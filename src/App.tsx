@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Wallet,
   LayoutDashboard,
@@ -26,7 +26,7 @@ import {
   supabase,
 } from "./supabase";
 import type { User } from "@supabase/supabase-js";
-import { balances, captureCardStatement, goalProgress, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "./ledger";
+import { balances, captureCardStatement, cardPaymentReminders, cardStatementDueDate, dueDate, goalProgress, occurrenceSource, postDue, remainingStatementDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateDay, validateManualDate, validateSignedAmount, validateTransaction, withCategory } from "./ledger";
 import type { Data, Item } from "./ledger";
 import { CashflowChart, CategoryDonut } from "./charts";
 const blank: Data = {
@@ -111,6 +111,7 @@ const download = (rows: any[][], name: string) => {
   URL.revokeObjectURL(url);
 };
 function MoneyApp({ user }: { user: User }) {
+  const saveLock = useRef(false);
   const [d, setD] = useState<Data>(blank),
     [rev, setRev] = useState(0),
     [ready, setReady] = useState(false),
@@ -178,6 +179,11 @@ function MoneyApp({ user }: { user: User }) {
     })();
   }, [user.id, loadAttempt]);
   async function save(next: Data) {
+    if (saveLock.current) {
+      setError("Another change is saving. Wait a moment and try again.");
+      return false;
+    }
+    saveLock.current = true;
     setBusy(true);
     setSaveState("saving");
     setFailedSave(null);
@@ -221,6 +227,7 @@ function MoneyApp({ user }: { user: User }) {
       if (!conflict && !modal) setFailedSave(next);
       return false;
     } finally {
+      saveLock.current = false;
       setBusy(false);
     }
   }
@@ -253,6 +260,7 @@ function MoneyApp({ user }: { user: User }) {
       .filter((t) => t.type === "expense" && t.category === c)
       .reduce((a, t) => a + t.amount, 0);
   const pendingExpenses = upcomingExpenseSchedules(d, today);
+  const paymentReminders = cardPaymentReminders(d, today);
   const safe = safeToSpend(d, today);
   const savedThisMonth = d.goals.reduce((sum, goal) => sum + goalProgress(d, goal.id, today).month, 0);
   const savedInPeriod = period.filter((transaction) => transaction.type === "transfer" &&
@@ -290,12 +298,28 @@ function MoneyApp({ user }: { user: User }) {
     let next = { ...d };
     if (modal === "account") {
       const existing = d.accounts.find((account) => account.id === key);
+      if (f.type !== "bank" && f.type !== "card") {
+        setError("Choose a bank account or credit card.");
+        return;
+      }
       if (existing && existing.type !== f.type) {
         setError("Account type cannot change after creation. Add a new account instead.");
         return;
       }
+      const openingProblem = validateSignedAmount(f.amount || "0", "opening balance") ||
+        validateAmount(f.limit || "0", "credit limit", true);
+      if (openingProblem) {
+        setError(openingProblem);
+        return;
+      }
+      if (existing && v !== existing.opening && d.transactions.some((transaction) =>
+        transaction.account === key || transaction.to === key)) {
+        setError("Opening balance is locked after account activity. Record an adjustment transaction to correct the balance.");
+        return;
+      }
       if (f.type === "card") {
-        const statementProblem = validateAmount(f.statement || "0", "statement amount", true);
+        const statementProblem = validateAmount(f.statement || "0", "statement balance", true) ||
+          validateDay(f.due || "1", "Card due day");
         if (statementProblem) {
           setError(statementProblem);
           return;
@@ -305,7 +329,20 @@ function MoneyApp({ user }: { user: User }) {
       base.isSavings = f.type === "bank" && f.isSavings === "true";
       base.limit = amount(f.limit);
       base.statement = amount(f.statement);
-      if (existing?.type === "card" && base.statement !== existing.statement) delete base.statementDate;
+      if (f.type === "card") {
+        base.due = Number(f.due || 1);
+        if (base.statement > 0 && !existing?.statementId) {
+          base.statementDate = today;
+          base.statementId = id();
+          base.statementSource = "manual";
+        } else if (existing && base.statement !== existing.statement) {
+          base.statementSource = "manual";
+        } else if (base.statement === 0 && !existing?.statementId) {
+          delete base.statementDate;
+          delete base.statementId;
+          delete base.statementSource;
+        }
+      }
       next.accounts = [...d.accounts.filter((x) => x.id !== key), base];
     }
     if (modal === "transaction") {
@@ -384,28 +421,84 @@ function MoneyApp({ user }: { user: User }) {
           Number.isSafeInteger(original?.goalDelta);
         base.goalDelta = sameHistoricalTransfer && original ? Math.sign(original.goalDelta) * v : destination?.isSavings ? v : -v;
       }
-      next.transactions = [...d.transactions.filter((x) => x.id !== key), base];
+      if (base.type === "payment") {
+        const card = d.accounts.find((account) => account.id === base.to && account.type === "card");
+        if (original?.type === "payment" && original.to === base.to && original.statementId) {
+          base.statementId = original.statementId;
+        } else {
+          base.statementId = card?.statementDate && base.date >= card.statementDate ? card.statementId : undefined;
+        }
+      } else {
+        delete base.statementId;
+      }
+      let replacedId = "";
+      if (base.type === "income" || base.type === "expense") {
+        if (f.scheduleId) {
+          const schedule = d.schedules.find((item) => item.id === f.scheduleId);
+          if (!schedule || schedule.type !== base.type || schedule.account !== base.account ||
+              base.date < (schedule.start || "0000-00-00")) {
+            setError("Choose a matching recurring entry with the same type and account.");
+            return;
+          }
+          base.source = occurrenceSource(schedule.id, mid(base.date));
+          const existingOccurrence = d.transactions.find((transaction) => transaction.source === base.source && transaction.id !== key);
+          if (existingOccurrence) {
+            if (existingOccurrence.linkedManually) {
+              setError("A manual transaction is already linked to this recurring month.");
+              return;
+            }
+            if (!confirm(`Replace the automatic ${schedule.name} entry for ${mid(base.date)} with this transaction?`)) return;
+            replacedId = existingOccurrence.id;
+          }
+          base.linkedManually = true;
+        } else if (original?.source) {
+          base.source = original.source;
+          base.linkedManually = original.linkedManually;
+        }
+      } else {
+        delete base.source;
+        delete base.linkedManually;
+      }
+      delete base.scheduleId;
+      next.transactions = [...d.transactions.filter((x) => x.id !== key && x.id !== replacedId), base];
     }
     if (modal === "schedule") {
-      if (!/^(\d+)(\.\d{1,2})?$/.test((f.amount || "").trim()) || v <= 0) {
-        setError("Enter a positive monthly amount with no more than two decimal places.");
-        return;
-      }
-      if (!d.accounts.some((account) => account.id === f.account && !account.archived)) {
+      const kind = f.type || "expense";
+      const account = d.accounts.find((item) => item.id === f.account && !item.archived);
+      if (!account) {
         setError("Choose an active account for this schedule.");
         return;
       }
-      if ((f.type || "expense") === "income" &&
-          !bank.some((account) => account.id === f.account)) {
+      if (kind === "card_reminder" && account.type !== "card") {
+        setError("Choose a credit card for the payment reminder.");
+        return;
+      }
+      if (kind === "card_reminder" && d.schedules.some((item) => item.id !== key && item.type === kind && item.account === account.id)) {
+        setError("This card already has a monthly payment reminder.");
+        return;
+      }
+      if (kind === "income" && account.type !== "bank") {
         setError("Recurring income must go to a bank or cash account.");
         return;
       }
-      base.amount = v;
-      base.day = Math.max(1, Math.min(31, Number(f.day) || 1));
-      base.start = f.start || now();
-      base.type = f.type || "expense";
+      if (kind !== "card_reminder") {
+        const problem = validateAmount(f.amount || "", "monthly amount") || validateDay(f.day || "1", "Due day");
+        if (problem) { setError(problem); return; }
+      }
+      base.amount = kind === "card_reminder" ? 0 : v;
+      base.day = kind === "card_reminder" ? Number(account.due || 1) : Number(f.day || 1);
+      base.start = f.start || today;
+      base.type = kind;
+      if (kind === "card_reminder") { delete base.category; delete base.sub; }
+      const startProblem = validateManualDate(base.start, base.start);
+      if (startProblem) { setError("Choose a valid start date."); return; }
       next.schedules = [...d.schedules.filter((x) => x.id !== key), base];
-      next = postDue(next, now());
+      const posted = postDue(next, today);
+      const newEntries = posted.transactions.filter((item) => item.source?.startsWith(`${key}:`) &&
+        !next.transactions.some((original) => original.id === item.id));
+      if (newEntries.length && base.start < today &&
+          !confirm(`This schedule will add ${newEntries.length} past transaction${newEntries.length === 1 ? "" : "s"} from ${newEntries[0].date} through ${newEntries.at(-1)?.date}. Continue?`)) return;
+      next = posted;
     }
     if (modal === "budget") {
       if (!d.categories[f.category]) {
@@ -517,6 +610,27 @@ function MoneyApp({ user }: { user: User }) {
     const currentDebt = Math.max(0, bal[card.id] || 0);
     if (!confirm(`Set ${card.name}'s statement snapshot to ${usd(currentDebt)} as of ${today}? Do this when the statement closes, then check the amount against your card issuer.`)) return;
     await save(captureCardStatement(d, card.id, today));
+  }
+  function openCardPayment(card: Item) {
+    const due = remainingStatementDue(d, card.id, today);
+    open("transaction", {
+      type: "payment", account: card.payFrom || "", to: card.id,
+      ...(due && due > 0 ? { amount: due } : {}), date: today,
+    });
+  }
+  async function toggleSkip(schedule: Item) {
+    const card = d.accounts.find((account) => account.id === schedule.account);
+    const due = schedule.type === "card_reminder" && card ? cardStatementDueDate(card) : null;
+    const source = occurrenceSource(schedule.id, due ? mid(due) : mid(today));
+    if (d.transactions.some((transaction) => transaction.source === source)) {
+      setError("This month's transaction has already posted. Edit or delete it in Transactions.");
+      return;
+    }
+    const skipped = d.skippedSources.includes(source);
+    const next = { ...d, skippedSources: skipped
+      ? d.skippedSources.filter((item) => item !== source)
+      : [...d.skippedSources, source] };
+    await save(skipped ? postDue(next, today) : next);
   }
   async function removeCategorySubgroup(group: string, sub: string) {
     const nextSubs = (d.categories[group] || []).filter((item) => item !== sub);
@@ -797,7 +911,7 @@ function MoneyApp({ user }: { user: User }) {
                       <strong className={safe < 0 ? "red" : "green"}>{usd(safe)}</strong>
                       <small>Spendable cash less card debt, upcoming bills this month and remaining monthly savings reserves.</small>
                       {d.goals.length > 0 && <small className={savedThisMonth < 0 ? "red" : ""}>
-                        Saved toward goals this month: {usd(savedThisMonth)}
+                        Recorded goal contributions this month: {usd(savedThisMonth)}
                       </small>}
                     </div>
                     <button className="secondary" type="button" onClick={() => { setPage("planning"); setPlanningTab("recurring"); }}>
@@ -856,6 +970,18 @@ function MoneyApp({ user }: { user: User }) {
                         ))}
                       {!pendingExpenses.length &&
                         empty("No more scheduled charges this month.")}
+                      {paymentReminders.length > 0 && <>
+                        <h3>Card payment reminders</h3>
+                        {paymentReminders.map((reminder) => {
+                          const card = d.accounts.find((account) => account.id === reminder.account)!;
+                          return <div className="due" key={reminder.id}>
+                            <div className="due-day">{card.due || 1}</div>
+                            <div><b>{card.name}</b><small>{cardStatementDueDate(card)! < today ? "Overdue" : "Due"} {cardStatementDueDate(card)} · Statement remaining</small></div>
+                            <strong className="red">{usd(remainingStatementDue(d, card.id, today) || 0)}</strong>
+                            <button className="secondary" onClick={() => openCardPayment(card)}>Pay</button>
+                          </div>;
+                        })}
+                      </>}
                     </section>
                   </div>
                   <section className="panel">
@@ -949,7 +1075,8 @@ function MoneyApp({ user }: { user: User }) {
                         <small>CURRENT CARD DEBT</small>
                         <h2>{a.name}</h2>
                         <strong className={bal[a.id] > 0 ? "red" : "green"}>{usd(bal[a.id])}</strong>
-                        <p>Statement snapshot: {usd(a.statement || 0)} · {a.statementDate ? `captured ${a.statementDate}` : "manual"}</p>
+                        <p>Statement balance: {usd(a.statement || 0)} · {a.statementDate ? `${a.statementSource === "manual" ? "set" : "captured"} ${a.statementDate}` : "legacy entry"}</p>
+                        <p>Remaining statement due: {remainingStatementDue(d, a.id, today) === null ? "Set statement to track payments" : usd(remainingStatementDue(d, a.id, today) || 0)}</p>
                         <p>Due day {a.due || 1} · Paid from {name(a.payFrom)}</p>
                         <div>
                           <button
@@ -960,14 +1087,7 @@ function MoneyApp({ user }: { user: User }) {
                             Edit
                           </button>
                           <button
-                            onClick={() =>
-                              open("transaction", {
-                                type: "payment",
-                                account: a.payFrom,
-                                to: a.id,
-                                date: now(),
-                              })
-                            }
+                            onClick={() => openCardPayment(a)}
                           >
                             Pay
                           </button>
@@ -980,7 +1100,7 @@ function MoneyApp({ user }: { user: User }) {
                     ))}
                   </div>
                   {!cards.length && !archivedCards.length && empty("Add your first credit card.")}
-                  {cards.length > 0 && <div className="notice">Set the statement when your billing cycle closes. Later purchases change current debt, while the captured statement stays fixed.</div>}
+                  {cards.length > 0 && <div className="notice">Set the statement when your billing cycle closes. Purchases change current debt; repayments reduce the displayed remaining statement due. Check both against your card issuer.</div>}
                   {archivedCards.length > 0 && (
                     <section className="panel">
                       <h2>Archived cards</h2>
@@ -1009,28 +1129,44 @@ function MoneyApp({ user }: { user: User }) {
                     { id: "trips", label: "Trips" },
                   ], planningTab, setPlanningTab, "Planning sections")}
                   {planningTab === "recurring" && <>
-                  {section("Recurring income & bills", "Monthly entries post when you open the app.", "schedule", true)}
+                  {section("Recurring entries & reminders", "Monthly income and expenses post when you open the app. Card reminders need a payment transaction.", "schedule", true)}
                   <section className="panel">
-                    {d.schedules.map((s) => (
-                      <div key={s.id}>
+                    {d.schedules.map((s) => {
+                      const card = d.accounts.find((account) => account.id === s.account);
+                      const reminderDue = s.type === "card_reminder" && card ? cardStatementDueDate(card) : null;
+                      const source = occurrenceSource(s.id, reminderDue ? mid(reminderDue) : mid(today));
+                      const posted = d.transactions.some((transaction) => transaction.source === source);
+                      const skipped = d.skippedSources.includes(source);
+                      const due = s.type === "card_reminder" ? remainingStatementDue(d, s.account, today) : null;
+                      const canSkip = (reminderDue || dueDate(mid(today), s.day)) >=
+                        (s.start || "0000-00-00") && (s.type !== "card_reminder" || (due || 0) > 0);
+                      return <div key={s.id}>
                         {row(
                           s.name,
-                          `${s.type} · Day ${s.day} · ${name(s.account)}`,
-                          usd(s.amount),
+                          s.type === "card_reminder" ? `Card payment reminder · ${reminderDue ? `Due ${reminderDue}` : "Set statement"} · ${name(s.account)}` :
+                            `${s.type} · Day ${s.day} · ${name(s.account)}`,
+                          s.type === "card_reminder" ? due === null ? "Set statement" : due === 0 ? "No balance due" : usd(due) : usd(s.amount),
                           () => open("schedule", s),
                           () => remove("schedules", s.id),
                           "Edit",
-                          s.type === "income" ? "green" : "red",
+                          s.type === "income" || (s.type === "card_reminder" && due === 0) ? "green" : "red",
                         )}
-                      </div>
-                    ))}
+                        {((!posted && canSkip) || (s.type === "card_reminder" && card?.type === "card" && (due || 0) > 0)) &&
+                        <div className="schedule-actions">
+                          {!posted && canSkip && <button className="text-button" disabled={busy}
+                            onClick={() => void toggleSkip(s)}>{skipped ? "Undo skip" : s.type === "card_reminder" ? "Skip reminder" : "Skip this month"}</button>}
+                          {s.type === "card_reminder" && card?.type === "card" && (due || 0) > 0 &&
+                            <button className="text-button" onClick={() => openCardPayment(card)}>Pay card</button>}
+                        </div>}
+                      </div>;
+                    })}
                     {!d.schedules.length &&
                       empty("Add salary, rent, utilities and subscriptions.")}
                   </section>
                   <div className="notice">
-                    Each schedule posts once per month on or after its due date
-                    when you open the site. Past entries remain if a schedule
-                    changes.
+                    Income and expense schedules post once per month on or after their due date.
+                    Link a manual transaction to its recurring month to avoid a duplicate.
+                    Card reminders never post an expense. Past entries remain if a schedule changes.
                   </div>
                   </>}
                 </>
@@ -1221,13 +1357,18 @@ function MoneyApp({ user }: { user: User }) {
                     <button className="text-button" onClick={() => { setPage("accounts"); setAccountTab("banks"); }}>Go to accounts →</button>
                   </div>}
                   <section className="panel">
+                    {savingsBank.length > 0 && <p>Current savings account balance: <strong className="green">{usd(savingsBank.reduce((sum, account) => sum + (bal[account.id] || 0), 0))}</strong></p>}
+                    {d.goals.reduce((sum, goal) => sum + Math.max(0, goalProgress(d, goal.id, today).total), 0) >
+                      savingsBank.reduce((sum, account) => sum + Math.max(0, bal[account.id] || 0), 0) &&
+                      <div className="notice">Recorded goal allocations exceed your current savings account balances. Review unlinked withdrawals, expenses, and starting allocations.</div>}
+                    <p className="field-hint">Goal progress shows starting allocations and transfers linked to each goal. Other account activity changes the savings balance but does not change those allocations.</p>
                     {d.goals.map((g) => {
                       const progress = goalProgress(d, g.id, today);
                       const percent = g.amount > 0 ? Math.min(100, Math.max(0, progress.total / g.amount * 100)) : 0;
                       const reached = g.amount > 0 && progress.total >= g.amount;
                       const remaining = Math.max(0, g.monthly - Math.max(0, progress.month));
                       return <div className="goal-card" key={g.id}>
-                        <div className="goal-head"><h3>{g.name}</h3><strong>{usd(Math.max(0, progress.total))} / {usd(g.amount)}</strong></div>
+                        <div className="goal-head"><h3>{g.name}</h3><strong>Recorded toward goal: {usd(Math.max(0, progress.total))} / {usd(g.amount)}</strong></div>
                         <div className="bar" role="progressbar" aria-label={`${g.name} progress`}
                           aria-valuenow={Math.round(percent)}
                           aria-valuemin={0} aria-valuemax={100}>
@@ -1370,7 +1511,7 @@ function MoneyApp({ user }: { user: User }) {
                       <strong className={income >= spent ? "green" : "red"}>{usd(income - spent)}</strong>
                     </div>
                     <div className="stat">
-                      <span>Saved toward goals</span>
+                      <span>Recorded goal contributions</span>
                       <strong className={savedInPeriod < 0 ? "red" : "green"}>{usd(savedInPeriod)}</strong>
                     </div>
                   </div>
@@ -1464,15 +1605,13 @@ function MoneyApp({ user }: { user: User }) {
                     { value: "bank", label: "Bank / cash" },
                     { value: "card", label: "Credit card" },
                   ])}
-                  {field(
-                    "Opening balance or card debt ($)",
-                    "amount",
-                    "number",
-                  )}
+                  {f.id && d.transactions.some((transaction) => transaction.account === f.id || transaction.to === f.id)
+                    ? <label className="field"><span>Opening balance or card debt ($)</span><input value={f.amount || "0"} readOnly /><small className="field-hint">Locked after transactions. Use an adjustment to correct the balance.</small></label>
+                    : field("Opening balance or card debt ($)", "amount", "number")}
                   {f.type === "card" && (
                     <>
                       {field("Credit limit ($)", "limit", "number")}
-                      {field("Statement amount due ($)", "statement", "number")}
+                      {field("Statement balance ($)", "statement", "number")}
                       {field("Due day (1–31)", "due", "number")}
                       {field("Pay from bank", "payFrom", "select", bankOptions)}
                     </>
@@ -1523,6 +1662,13 @@ function MoneyApp({ user }: { user: User }) {
                         originalTransaction?.to,
                       ),
                     )}
+                  {(f.type === "income" || f.type === "expense") && <>
+                    {field("Recurring entry (optional)", "scheduleId", "select",
+                      d.schedules.filter((schedule) => schedule.type === f.type && schedule.account === f.account &&
+                        (f.date || today) >= (schedule.start || "0000-00-00"))
+                        .map((schedule) => ({ value: schedule.id, label: schedule.name })))}
+                    <small className="field-hint">Select the recurring entry for this month to prevent a duplicate. An automatic entry can be replaced when you save.</small>
+                  </>}
                   {f.type === "transfer" && (d.goals.length > 0 || f.goal) && <>
                     {field("Savings goal (optional)", "goal", "select", [
                       ...d.goals.map((goal) => ({ value: goal.id, label: goal.name })),
@@ -1593,12 +1739,14 @@ function MoneyApp({ user }: { user: User }) {
                   {field("Type", "type", "select", [
                     { value: "income", label: "Income" },
                     { value: "expense", label: "Expense" },
+                    { value: "card_reminder", label: "Credit card payment reminder" },
                   ])}
-                  {field("Monthly amount ($)", "amount", "number")}
-                  {field("Day of month (1–31)", "day", "number")}
+                  {f.type !== "card_reminder" && field("Monthly amount ($)", "amount", "number")}
+                  {f.type !== "card_reminder" && field("Day of month (1–31)", "day", "number")}
                   {field("Start date", "start", "date")}
-                  {field("Bank or card", "account", "select", accountOptions)}
-                  {f.type !== "income" && (
+                  {field(f.type === "card_reminder" ? "Credit card" : "Bank or card", "account", "select",
+                    f.type === "card_reminder" ? cardOptions : f.type === "income" ? bankOptions : accountOptions)}
+                  {f.type !== "income" && f.type !== "card_reminder" && (
                     <>
                       {field("Group", "category", "select", groups)}
                       {field(
