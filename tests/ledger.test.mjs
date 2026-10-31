@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { balances, categoryTotals, monthlyFlow, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "../src/ledger.ts";
+import { balances, categoryTotals, goalProgress, monthlyFlow, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "../src/ledger.ts";
 
 const accounts = [
   { id: "checking", name: "Checking", type: "bank", opening: 10000 },
@@ -158,4 +158,40 @@ test("a transaction can create a group and subcategory with icons in one ledger 
   const renamedIcon = withCategory(updated, "Pets", "Food", "", "🧾");
   assert.deepEqual(renamedIcon.categories.Pets, ["Food"]);
   assert.equal(renamedIcon.subcategoryIcons.Pets.Food, "🧾");
+});
+
+test("savings transfers require a real goal and one savings account", () => {
+  const savingsAccounts = accounts.map((account) => account.id === "savings" ? { ...account, isSavings: true } : account);
+  const goals = [{ id: "emergency", monthly: 3000 }];
+  const contribution = { type: "transfer", account: "checking", to: "savings", amount: 2000, goal: "emergency" };
+  assert.equal(validateTransaction(contribution, savingsAccounts, undefined, goals), null);
+  assert.equal(validateTransaction({ ...contribution, account: "savings", to: "checking" }, savingsAccounts, undefined, goals), null);
+  assert.match(validateTransaction({ ...contribution, goal: "missing" }, savingsAccounts, undefined, goals), /existing savings goal/);
+  assert.match(validateTransaction(contribution, accounts, undefined, goals), /savings account/);
+  assert.equal(validateTransaction({ ...contribution, id: "old" }, accounts,
+    { ...contribution, id: "old", goalDelta: 2000 }, goals), null);
+  assert.equal(validateTransaction({ ...contribution, id: "old" }, savingsAccounts,
+    { ...contribution, id: "old", goalDelta: 2000 }, []), null);
+  assert.match(validateTransaction({ ...contribution, type: "expense" }, savingsAccounts, undefined, goals), /Only bank transfers/);
+});
+
+test("monthly savings progress reduces the remaining reserve exactly once", () => {
+  const savingsAccounts = accounts.map((account) => account.id === "savings" ? { ...account, isSavings: true, opening: 5000 } : account);
+  const base = data({ accounts: savingsAccounts, goals: [{ id: "emergency", amount: 100000, monthly: 3000 }] });
+  assert.equal(safeToSpend(base, "2026-10-30"), 7000);
+  const withContribution = data({ ...base, transactions: [
+    { id: "oct", date: "2026-10-15", type: "transfer", account: "checking", to: "savings", amount: 2000, goal: "emergency", goalDelta: 2000 },
+    { id: "nov", date: "2026-11-15", type: "transfer", account: "checking", to: "savings", amount: 1000, goal: "emergency", goalDelta: 1000 },
+  ] });
+  assert.deepEqual(goalProgress(withContribution, "emergency", "2026-10-30"), { total: 2000, month: 2000 });
+  assert.equal(safeToSpend(withContribution, "2026-10-30"), 7000);
+  const withWithdrawal = data({ ...withContribution, transactions: [
+    ...withContribution.transactions,
+    { id: "withdraw", date: "2026-10-20", type: "transfer", account: "savings", to: "checking", amount: 500, goal: "emergency", goalDelta: -500 },
+  ] });
+  assert.deepEqual(goalProgress(withWithdrawal, "emergency", "2026-10-30"), { total: 1500, month: 1500 });
+  assert.equal(safeToSpend(withWithdrawal, "2026-10-30"), 7000);
+  const reached = data({ ...base, goals: [{ id: "emergency", amount: 5000, monthly: 3000, starting: 5000 }] });
+  assert.deepEqual(goalProgress(reached, "emergency", "2026-10-30"), { total: 5000, month: 0 });
+  assert.equal(safeToSpend(reached, "2026-10-30"), 10000);
 });

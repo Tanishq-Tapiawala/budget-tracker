@@ -1,8 +1,12 @@
+import { useState } from "react";
 import type { Item } from "./ledger";
 import { categoryTotals, monthlyFlow } from "./ledger";
 
 const formatMonth = (month: string) =>
   new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" })
+    .format(new Date(`${month}-01T00:00:00Z`));
+const formatMonthLong = (month: string) =>
+  new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
     .format(new Date(`${month}-01T00:00:00Z`));
 const colors = ["#d94e53", "#ed8062", "#e8b35b", "#8b75c8", "#5596bb", "#a1aeb6"];
 
@@ -11,13 +15,17 @@ export function CashflowChart({
   endMonth,
   count,
   format,
+  showBreakdown = false,
 }: {
   transactions: Item[];
   endMonth: string;
   count: number;
   format: (amount: number) => string;
+  showBreakdown?: boolean;
 }) {
+  const [selectedMonth, setSelectedMonth] = useState(endMonth);
   const points = monthlyFlow(transactions, endMonth, count);
+  const selected = points.find((point) => point.month === selectedMonth) || points[points.length - 1];
   const highest = Math.max(1, ...points.flatMap((point) => [point.income, point.expense]));
   const totalIncome = points.reduce((sum, point) => sum + point.income, 0);
   const totalExpense = points.reduce((sum, point) => sum + point.expense, 0);
@@ -31,11 +39,14 @@ export function CashflowChart({
         <div
           className="flow-chart"
           style={{ minWidth: count > 6 ? 640 : 0 }}
-          role="img"
-          aria-label={points.map((point) => `${point.month}: income ${format(point.income)}, expenses ${format(point.expense)}`).join("; ")}
+          role="group"
+          aria-label="Income and expenses by month"
         >
           {points.map((point) => (
-            <div className="flow-month" key={point.month}>
+            <button type="button" className={`flow-month ${selected.month === point.month ? "selected" : ""}`}
+              key={point.month} aria-pressed={selected.month === point.month}
+              aria-label={`${formatMonthLong(point.month)}: income ${format(point.income)}, expenses ${format(point.expense)}`}
+              onClick={() => setSelectedMonth(point.month)}>
               <div className="flow-bars">
                 <div
                   className="flow-bar income-bar"
@@ -49,10 +60,26 @@ export function CashflowChart({
                 />
               </div>
               <span>{formatMonth(point.month)}</span>
-            </div>
+            </button>
           ))}
         </div>
       </div>
+      <div className="flow-selected" aria-live="polite">
+        <strong>{formatMonthLong(selected.month)}</strong>
+        <span className="green">Income {format(selected.income)}</span>
+        <span className="red">Expenses {format(selected.expense)}</span>
+      </div>
+      {showBreakdown && <div className="chart-breakdown">
+        <h3>Monthly amounts</h3>
+        <div className="chart-table-scroll"><table>
+          <thead><tr><th>Month</th><th>Income</th><th>Expenses</th></tr></thead>
+          <tbody>{points.map((point) => <tr key={point.month}>
+            <th scope="row">{formatMonthLong(point.month)}</th>
+            <td className="green">{format(point.income)}</td>
+            <td className="red">{format(point.expense)}</td>
+          </tr>)}</tbody>
+        </table></div>
+      </div>}
     </div>
   );
 }

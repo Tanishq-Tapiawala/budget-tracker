@@ -655,7 +655,9 @@ button:disabled {
   background: repeating-linear-gradient(to top, transparent 0, transparent 39px, #edf1ef 40px);
 }
 
-.flow-month { min-width: 0; text-align: center; }
+.flow-month { min-width: 0; text-align: center; border: 0; background: transparent; padding: 0; color: inherit; border-radius: 8px 8px 0 0; }
+.flow-month.selected { background: #f1f8f4; }
+.flow-month:focus-visible { outline: 2px solid var(--green-dark); outline-offset: -2px; }
 .flow-month > span {
   display: block;
   padding: 8px 0;
@@ -677,6 +679,17 @@ button:disabled {
 }
 .income-bar { background: #20a46a; }
 .expense-bar { background: #d94e53; }
+
+.flow-selected { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; padding: 14px 4px 2px; font-size: 13px; }
+.flow-selected strong { color: var(--ink); }
+.flow-selected span { font-weight: 700; }
+.chart-breakdown { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 18px; }
+.chart-breakdown h3 { margin: 0 0 12px; font-size: 16px; }
+.chart-table-scroll { overflow-x: auto; }
+.chart-breakdown table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.chart-breakdown th, .chart-breakdown td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.chart-breakdown th:first-child { width: 50%; }
+.chart-breakdown td { font-weight: 700; }
 
 .donut-layout {
   display: flex;
@@ -734,6 +747,15 @@ button:disabled {
   margin-top: 16px;
   padding-top: 16px;
 }
+.goal-card { padding: 6px 0 12px; }
+.goal-card + .goal-card { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 12px; }
+.goal-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 14px; }
+.goal-head h3 { margin: 0; }
+.goal-head strong { color: var(--green-dark); }
+.goal-card p { color: var(--muted); font-size: 13px; }
+.goal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.goal-actions .primary { display: inline-flex; align-items: center; gap: 6px; }
+.savings-setup { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .budget-top {
   display: flex;
   align-items: center;
@@ -1145,6 +1167,11 @@ button:disabled {
 }
 
 .field input[readonly] { background: var(--panel-alt); color: var(--muted); }
+.field-hint { color: var(--muted); line-height: 1.5; margin-top: -6px; }
+.account-check { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-alt); cursor: pointer; }
+.account-check input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--green-dark); }
+.account-check span { display: grid; gap: 5px; }
+.account-check small { color: var(--muted); line-height: 1.4; }
 
 .dialog-buttons {
   display: flex;
@@ -1219,6 +1246,8 @@ button:disabled {
   .inline-category-fields { grid-template-columns: 1fr; }
   .safe-hero .secondary { width: 100%; }
   .page-tabs button { flex: 1 1 120px; }
+  .goal-actions button { flex: 1 1 auto; justify-content: center; }
+  .savings-setup { align-items: flex-start; flex-direction: column; }
   .toolbar {
     align-items: stretch;
   }

@@ -26,7 +26,7 @@ import {
   supabase,
 } from "./supabase";
 import type { User } from "@supabase/supabase-js";
-import { balances, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "./ledger";
+import { balances, goalProgress, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "./ledger";
 import type { Data, Item } from "./ledger";
 import { CashflowChart, CategoryDonut } from "./charts";
 const blank: Data = {
@@ -237,6 +237,8 @@ function MoneyApp({ user }: { user: User }) {
     cards = d.accounts.filter((a) => a.type === "card" && !a.archived),
     archivedBank = d.accounts.filter((a) => a.type === "bank" && a.archived),
     archivedCards = d.accounts.filter((a) => a.type === "card" && a.archived);
+  const savingsBank = bank.filter((account) => account.isSavings);
+  const spendingBank = bank.filter((account) => !account.isSavings);
   const bankTotal = bank.reduce((a, x) => a + (bal[x.id] || 0), 0),
     debt = cards.reduce((a, x) => a + Math.max(0, bal[x.id] || 0), 0);
   const period = transactionsForPeriod(d, month, annual, page);
@@ -252,6 +254,10 @@ function MoneyApp({ user }: { user: User }) {
       .reduce((a, t) => a + t.amount, 0);
   const pendingExpenses = upcomingExpenseSchedules(d, today);
   const safe = safeToSpend(d, today);
+  const savedThisMonth = d.goals.reduce((sum, goal) => sum + goalProgress(d, goal.id, today).month, 0);
+  const savedInPeriod = period.filter((transaction) => transaction.type === "transfer" &&
+    transaction.goal && Number.isSafeInteger(transaction.goalDelta))
+    .reduce((sum, transaction) => sum + transaction.goalDelta, 0);
   function open(type: string, entry: Item | Record<string, any> = {}) {
     setError("");
     setModal(type);
@@ -266,6 +272,7 @@ function MoneyApp({ user }: { user: User }) {
           "statement",
           "monthly",
           "budget",
+          "starting",
         ].includes(k)
           ? String(Number(v) / 100)
           : String(v ?? "")),
@@ -288,6 +295,7 @@ function MoneyApp({ user }: { user: User }) {
         return;
       }
       base.opening = v;
+      base.isSavings = f.type === "bank" && f.isSavings === "true";
       base.limit = amount(f.limit);
       base.statement = amount(f.statement);
       next.accounts = [...d.accounts.filter((x) => x.id !== key), base];
@@ -347,15 +355,26 @@ function MoneyApp({ user }: { user: User }) {
         delete base.trip;
       }
       if (base.type !== "transfer" && base.type !== "payment") delete base.to;
+      if (base.type !== "transfer" || !base.goal) {
+        delete base.goal;
+        delete base.goalDelta;
+      }
       delete base.newCategory;
       delete base.newCategoryIcon;
       delete base.newSub;
       delete base.newSubIcon;
       const original = d.transactions.find((transaction) => transaction.id === key);
-      const problem = validateTransaction(base, d.accounts, original);
+      const problem = validateTransaction(base, d.accounts, original, d.goals);
       if (problem) {
         setError(problem);
         return;
+      }
+      if (base.goal) {
+        const destination = d.accounts.find((account) => account.id === base.to);
+        const sameHistoricalTransfer = original?.goal === base.goal &&
+          original?.account === base.account && original?.to === base.to &&
+          Number.isSafeInteger(original?.goalDelta);
+        base.goalDelta = sameHistoricalTransfer && original ? Math.sign(original.goalDelta) * v : destination?.isSavings ? v : -v;
       }
       next.transactions = [...d.transactions.filter((x) => x.id !== key), base];
     }
@@ -395,13 +414,15 @@ function MoneyApp({ user }: { user: User }) {
     }
     if (modal === "goal") {
       const problem = validateAmount(f.amount || "", "savings target") ||
-        validateAmount(f.monthly || "0", "monthly reserve", true);
+        validateAmount(f.monthly || "0", "monthly reserve", true) ||
+        validateAmount(f.starting || "0", "already saved amount", true);
       if (problem) {
         setError(problem);
         return;
       }
       base.amount = v;
       base.monthly = amount(f.monthly);
+      base.starting = amount(f.starting);
       next.goals = [...d.goals.filter((x) => x.id !== key), base];
     }
     if (modal === "trip") {
@@ -629,6 +650,8 @@ function MoneyApp({ user }: { user: User }) {
     const icon = transaction.sub ? d.subcategoryIcons[transaction.category]?.[transaction.sub] || "🏷️" : "";
     return `${icon ? `${icon} ` : ""}${transaction.note || transaction.sub || transaction.category || transaction.type}`;
   };
+  const transactionAccounts = (transaction: Item) =>
+    transaction.to ? `${name(transaction.account)} → ${name(transaction.to)}` : name(transaction.account);
   return (
     <div className="shell">
       <aside className={`sidebar ${mobile ? "visible" : ""}`}>
@@ -759,7 +782,10 @@ function MoneyApp({ user }: { user: User }) {
                     <div>
                       <span>Estimated safe to spend today</span>
                       <strong className={safe < 0 ? "red" : "green"}>{usd(safe)}</strong>
-                      <small>Current cash less card debt, upcoming bills this month and monthly savings reserves.</small>
+                      <small>Spendable cash less card debt, upcoming bills this month and remaining monthly savings reserves.</small>
+                      {d.goals.length > 0 && <small className={savedThisMonth < 0 ? "red" : ""}>
+                        Saved toward goals this month: {usd(savedThisMonth)}
+                      </small>}
                     </div>
                     <button className="secondary" type="button" onClick={() => { setPage("planning"); setPlanningTab("recurring"); }}>
                       Review upcoming bills
@@ -767,7 +793,7 @@ function MoneyApp({ user }: { user: User }) {
                   </section>
                   <div className="stats">
                     {[
-                      ["Current bank balances", bankTotal, `${bank.length} accounts · as of today`],
+                      ["Total bank balances", bankTotal, `${bank.length} accounts${savingsBank.length ? " · includes savings" : ""}`],
                       ["Current card debt", debt, `${cards.length} cards · as of today`],
                       [
                         "Recorded income",
@@ -833,7 +859,7 @@ function MoneyApp({ user }: { user: User }) {
                       <div key={t.id}>
                         {row(
                           transactionTitle(t),
-                          `${t.date} · ${name(t.account)}`,
+                          `${t.date} · ${transactionAccounts(t)}`,
                           transactionValue(t),
                           () => open("transaction", t),
                           undefined,
@@ -861,10 +887,11 @@ function MoneyApp({ user }: { user: User }) {
                     {bank.map((a) => (
                       <div className="tile" key={a.id}>
                         <Landmark size={24} />
-                        <small>BANK ACCOUNT</small>
+                        <small>{a.isSavings ? "SAVINGS ACCOUNT" : "BANK ACCOUNT"}</small>
                         <h2>{a.name}</h2>
                         <strong className={bal[a.id] < 0 ? "red" : "green"}>{usd(bal[a.id])}</strong>
                         <p>Opening: {usd(a.opening)}</p>
+                        {a.isSavings && <p>Excluded from safe to spend</p>}
                         <div>
                           <button
                             onClick={() =>
@@ -898,8 +925,7 @@ function MoneyApp({ user }: { user: User }) {
                     </section>
                   )}
                   <div className="notice">
-                    Reconcile with an adjustment transaction when your real
-                    balance differs.
+                    Mark a bank account as savings to keep its balance outside safe to spend. Reconcile differences with an adjustment transaction.
                   </div>
                   </>}
                   {accountTab === "cards" && <>
@@ -1112,7 +1138,7 @@ function MoneyApp({ user }: { user: User }) {
                         <div key={t.id}>
                           {row(
                             transactionTitle(t),
-                            `${t.date} · ${t.type} · ${name(t.account)}`,
+                            `${t.date} · ${t.type} · ${transactionAccounts(t)}`,
                             transactionValue(t),
                             () => open("transaction", t),
                             () => remove("transactions", t.id),
@@ -1171,27 +1197,47 @@ function MoneyApp({ user }: { user: User }) {
                 <>
                   <div className="section-heading second">
                     <div>
-                      <h2>Savings targets</h2>
-                      <p>Monthly amounts reserved from safe-to-spend.</p>
+                      <h2>Savings goals</h2>
+                      <p>Track monthly contributions and progress toward each target.</p>
                     </div>
                     <button className="secondary" onClick={() => open("goal")}>
                       + Add goal
                     </button>
                   </div>
+                  {(!savingsBank.length || !spendingBank.length) && <div className="notice savings-setup">
+                    Mark one bank account as savings and keep another for spending before recording contributions.
+                    <button className="text-button" onClick={() => { setPage("accounts"); setAccountTab("banks"); }}>Go to accounts →</button>
+                  </div>}
                   <section className="panel">
-                    {d.goals.map((g) => (
-                      <div key={g.id}>
-                        {row(
-                          g.name,
-                          `Target ${usd(g.amount)}`,
-                          `${usd(g.monthly)} / month`,
-                          () => open("goal", g),
-                          () => remove("goals", g.id),
-                        )}
-                      </div>
-                    ))}
-                    {!d.goals.length && empty("Create a savings goal.")}
+                    {d.goals.map((g) => {
+                      const progress = goalProgress(d, g.id, today);
+                      const percent = g.amount > 0 ? Math.min(100, Math.max(0, progress.total / g.amount * 100)) : 0;
+                      const reached = g.amount > 0 && progress.total >= g.amount;
+                      const remaining = Math.max(0, g.monthly - Math.max(0, progress.month));
+                      return <div className="goal-card" key={g.id}>
+                        <div className="goal-head"><h3>{g.name}</h3><strong>{usd(Math.max(0, progress.total))} / {usd(g.amount)}</strong></div>
+                        <div className="bar" role="progressbar" aria-label={`${g.name} progress`}
+                          aria-valuenow={Math.round(percent)}
+                          aria-valuemin={0} aria-valuemax={100}>
+                          <div style={{ width: `${percent}%` }} />
+                        </div>
+                        <p>{reached ? "Goal reached · no further monthly reserve" : <>
+                          This month: <b className={progress.month < 0 ? "red" : "green"}>{usd(progress.month)}</b>
+                          {g.monthly > 0 ? ` of ${usd(g.monthly)} planned${remaining > 0 ? ` · ${usd(remaining)} left` : ""}` : " · No monthly amount set"}
+                        </>}</p>
+                        <div className="goal-actions">
+                          <button className="primary" disabled={!savingsBank.length || !spendingBank.length || reached}
+                            onClick={() => open("transaction", { type: "transfer", date: today, account: spendingBank[0]?.id, to: savingsBank[0]?.id, goal: g.id })}>
+                            <Plus size={16} /> Add contribution
+                          </button>
+                          <button className="secondary" onClick={() => open("goal", g)}>Edit goal</button>
+                          <button className="secondary" onClick={() => remove("goals", g.id)}>Delete</button>
+                        </div>
+                      </div>;
+                    })}
+                    {!d.goals.length && empty("Create a goal to plan monthly savings.")}
                   </section>
+                  <div className="notice">Record a transfer here after moving money at your bank. Transfers are excluded from income and expenses.</div>
                 </>
               )}
               {page === "planning" && planningTab === "trips" && (
@@ -1311,13 +1357,17 @@ function MoneyApp({ user }: { user: User }) {
                       <span>Surplus</span>
                       <strong className={income >= spent ? "green" : "red"}>{usd(income - spent)}</strong>
                     </div>
+                    <div className="stat">
+                      <span>Saved toward goals</span>
+                      <strong className={savedInPeriod < 0 ? "red" : "green"}>{usd(savedInPeriod)}</strong>
+                    </div>
                   </div>
                   <section className="panel chart-panel">
                     <div className="panel-head">
                       <h2>Income and expenses over time</h2>
                       <span className="tag">{annual ? "Jan–Dec" : "Last 6 months"}</span>
                     </div>
-                    <CashflowChart transactions={d.transactions} endMonth={annual ? `${month.slice(0, 4)}-12` : month} count={annual ? 12 : 6} format={usd} />
+                    <CashflowChart transactions={d.transactions} endMonth={annual ? `${month.slice(0, 4)}-12` : month} count={annual ? 12 : 6} format={usd} showBreakdown />
                   </section>
                   <div className="columns">
                     <section className="panel">
@@ -1415,6 +1465,11 @@ function MoneyApp({ user }: { user: User }) {
                       {field("Pay from bank", "payFrom", "select", bankOptions)}
                     </>
                   )}
+                  {f.type === "bank" && <label className="account-check">
+                    <input type="checkbox" checked={f.isSavings === "true"}
+                      onChange={(event) => setF({ ...f, isSavings: String(event.target.checked) })} />
+                    <span><strong>Use as savings account</strong><small>Exclude this balance from safe to spend and use it for goal contributions.</small></span>
+                  </label>}
                 </>
               )}
               {modal === "transaction" && (
@@ -1456,6 +1511,14 @@ function MoneyApp({ user }: { user: User }) {
                         originalTransaction?.to,
                       ),
                     )}
+                  {f.type === "transfer" && (d.goals.length > 0 || f.goal) && <>
+                    {field("Savings goal (optional)", "goal", "select", [
+                      ...d.goals.map((goal) => ({ value: goal.id, label: goal.name })),
+                      ...(f.goal && !d.goals.some((goal) => goal.id === f.goal)
+                        ? [{ value: f.goal, label: "Deleted goal (historical)" }] : []),
+                    ])}
+                    <small className="field-hint">Link a transfer between a spending account and a savings account. Transfers into savings add to the goal; withdrawals reduce it.</small>
+                  </>}
                   {(!f.type || f.type === "expense") && (
                     <>
                       <label className="field">
@@ -1550,6 +1613,8 @@ function MoneyApp({ user }: { user: User }) {
                   {field("Goal name", "name")}
                   {field("Total target ($)", "amount", "number")}
                   {field("Monthly reserve ($)", "monthly", "number")}
+                  {field("Already saved ($)", "starting", "number")}
+                  <small className="field-hint">The monthly reserve reduces safe to spend until you record a contribution. Already saved counts toward the goal but not this month's contribution.</small>
                 </>
               )}
               {modal === "trip" && (

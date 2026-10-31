@@ -8,9 +8,10 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 - Income and expenses, transfers, group/subgroup categories
 - Monthly recurring income and charges (posted on next app opening after a due date)
 - Skipped recurring occurrences stay skipped; creating a due schedule posts it immediately
-- Category budgets, monthly savings reserves and safe-to-spend estimate
-- Safe-to-spend subtracts current card debt, upcoming bank and card charges this month, and monthly savings reserves without counting a posted charge twice
-- Income/expense trend charts and category spending charts on the dashboard and reports
+- Category budgets, savings goals with monthly contributions, and a safe-to-spend estimate
+- Mark bank accounts as savings to exclude their balance from safe to spend. Link transfers into or out of savings to a goal to track net contributions; transfers are not expenses.
+- Safe-to-spend subtracts current card debt, upcoming spendable-bank and card charges this month, and the unfulfilled portion of monthly savings reserves without counting posted charges or contributions twice
+- Income/expense trend charts show exact amounts for a selected month; reports include a printable monthly amount table
 - Create category groups and subcategories, with icons, while recording an expense
 - Archived zero-balance accounts retain their transaction history and can be restored
 - Trips with linked expenses and budgets
@@ -66,4 +67,6 @@ The current Site has a **different database**. This migration does not silently 
 - Scheduled income and bills are posted on the next visit to the app, **not by a server-side timer**. A schedule posts at most once per month.
 - Statement amounts are manually managed and reports use browser Print → Save as PDF.
 - Safe-to-spend is a planning estimate for the current month; it does not predict unscheduled spending or future income.
+- Savings transfers are records in this app. Make the actual transfer with your bank separately. Goal progress uses the amount already saved that you enter plus linked transfers; an unlinked transfer does not count toward a goal.
+- Deleting a goal removes its future monthly reserve but retains historical transfers and their recorded savings amounts in reports.
 - This remains an early personal-finance app. Check calculations and use backups before treating it as a financial source of truth.

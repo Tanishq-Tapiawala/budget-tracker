@@ -70,6 +70,19 @@ export function monthlyFlow(transactions: Item[], endMonth: string, count: numbe
   });
 }
 
+export function goalProgress(data: Data, goalId: string, through: string) {
+  const starting = data.goals.find((goal) => goal.id === goalId)?.starting || 0;
+  const contributions = data.transactions.filter((transaction) =>
+    transaction.type === "transfer" && transaction.goal === goalId &&
+    transaction.date && transaction.date <= through && Number.isSafeInteger(transaction.goalDelta),
+  );
+  return {
+    total: starting + contributions.reduce((sum, transaction) => sum + transaction.goalDelta, 0),
+    month: contributions.filter((transaction) => monthOf(transaction.date) === monthOf(through))
+      .reduce((sum, transaction) => sum + transaction.goalDelta, 0),
+  };
+}
+
 export function categoryTotals(transactions: Item[]) {
   const totals = new Map<string, number>();
   for (const transaction of transactions) {
@@ -127,10 +140,10 @@ export function safeToSpend(data: Data, today: string) {
   const current = balances(data, today);
   const upcoming = upcomingExpenseSchedules(data, today);
   const active = data.accounts.filter((account) => !account.archived);
-  const cash = active.filter((account) => account.type === "bank")
+  const cash = active.filter((account) => account.type === "bank" && !account.isSavings)
     .reduce((sum, account) => sum + (current[account.id] || 0), 0);
   const bankCharges = upcoming
-    .filter((schedule) => active.some((account) => account.id === schedule.account && account.type === "bank"))
+    .filter((schedule) => active.some((account) => account.id === schedule.account && account.type === "bank" && !account.isSavings))
     .reduce((sum, schedule) => sum + schedule.amount, 0);
   const projectedCardDebt = active.filter((account) => account.type === "card")
     .reduce((sum, account) => {
@@ -138,7 +151,11 @@ export function safeToSpend(data: Data, today: string) {
         .reduce((total, schedule) => total + schedule.amount, 0);
       return sum + Math.max(0, (current[account.id] || 0) + pending);
     }, 0);
-  const reserves = data.goals.reduce((sum, goal) => sum + Math.max(0, goal.monthly || 0), 0);
+  const reserves = data.goals.reduce((sum, goal) => {
+    const progress = goalProgress(data, goal.id, today);
+    if (goal.amount > 0 && progress.total >= goal.amount) return sum;
+    return sum + Math.max(0, (goal.monthly || 0) - Math.max(0, progress.month));
+  }, 0);
   return cash - bankCharges - projectedCardDebt - reserves;
 }
 
@@ -162,6 +179,7 @@ export function validateTransaction(
   transaction: Record<string, any>,
   accounts: Item[],
   original?: Item,
+  goals: Item[] = [],
 ): string | null {
   const source = accounts.find((account) => account.id === transaction.account);
   if (!source) return "Choose a valid account.";
@@ -184,7 +202,19 @@ export function validateTransaction(
       return transaction.type === "payment"
         ? "Choose a credit card as the repayment destination."
         : "Choose a bank or cash account as the transfer destination.";
+    if (transaction.goal) {
+      if (transaction.type !== "transfer") return "Only bank transfers can be linked to a savings goal.";
+      if (!goals.some((goal) => goal.id === transaction.goal) && original?.goal !== transaction.goal)
+        return "Choose an existing savings goal.";
+      const sameHistoricalTransfer = original?.goal === transaction.goal &&
+        original?.account === transaction.account && original?.to === transaction.to &&
+        Number.isSafeInteger(original?.goalDelta);
+      if (Boolean(source.isSavings) === Boolean(destination.isSavings) && !sameHistoricalTransfer)
+        return "A savings goal transfer must move between spendable cash and a savings account.";
+    }
   }
+  if (transaction.goal && transaction.type !== "transfer")
+    return "Only bank transfers can be linked to a savings goal.";
   return null;
 }
 
