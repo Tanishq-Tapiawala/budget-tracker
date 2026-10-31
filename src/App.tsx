@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   Landmark,
   CreditCard,
-  Repeat,
   Receipt,
   ChartPie,
   Plane,
@@ -62,12 +61,9 @@ const blank: Data = {
 };
 const nav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "accounts", label: "Bank accounts", icon: Landmark },
-  { id: "cards", label: "Credit cards", icon: CreditCard },
-  { id: "schedules", label: "Recurring", icon: Repeat },
   { id: "transactions", label: "Transactions", icon: Receipt },
-  { id: "budgets", label: "Budgets", icon: ChartPie },
-  { id: "trips", label: "Trips", icon: Plane },
+  { id: "accounts", label: "Accounts", icon: Landmark },
+  { id: "planning", label: "Planning", icon: ChartPie },
   { id: "reports", label: "Reports", icon: ChartColumn },
 ];
 const categoryIcons: Record<string, string> = {
@@ -124,6 +120,10 @@ function MoneyApp({ user }: { user: User }) {
     [failedSave, setFailedSave] = useState<Data | null>(null),
     [loadAttempt, setLoadAttempt] = useState(0),
     [page, setPage] = useState("dashboard"),
+    [accountTab, setAccountTab] = useState<"banks" | "cards">("banks"),
+    [planningTab, setPlanningTab] = useState<"recurring" | "budgets" | "goals" | "trips">("recurring"),
+    [showCategories, setShowCategories] = useState(false),
+    [showOtherTypes, setShowOtherTypes] = useState(false),
     [mobile, setMobile] = useState(false),
     [month, setMonth] = useState(() => mid(now())),
     [annual, setAnnual] = useState(false),
@@ -255,6 +255,7 @@ function MoneyApp({ user }: { user: User }) {
   function open(type: string, entry: Item | Record<string, any> = {}) {
     setError("");
     setModal(type);
+    setShowOtherTypes(["transfer", "payment", "adjustment"].includes(String(entry.type || "")));
     const obj: Record<string, string> = {};
     Object.entries(entry).forEach(
       ([k, v]) =>
@@ -578,11 +579,11 @@ function MoneyApp({ user }: { user: User }) {
       </div>
     );
   }
-  function section(title: string, sub: string, add?: string) {
+  function section(title: string, sub: string, add?: string, nested = false) {
     return (
       <div className="section-heading">
         <div>
-          <h1>{title}</h1>
+          {nested ? <h2>{title}</h2> : <h1>{title}</h1>}
           <p>{sub}</p>
         </div>
         {add && (
@@ -594,7 +595,7 @@ function MoneyApp({ user }: { user: User }) {
                 add === "transaction"
                   ? { type: "expense", date: now() }
                   : add === "account"
-                    ? { type: page === "cards" ? "card" : "bank" }
+                    ? { type: accountTab === "cards" ? "card" : "bank" }
                     : {},
               )
             }
@@ -604,6 +605,12 @@ function MoneyApp({ user }: { user: User }) {
         )}
       </div>
     );
+  }
+  function tabs<T extends string>(items: { id: T; label: string }[], selected: T, choose: (value: T) => void, label: string) {
+    return <div className="page-tabs" role="tablist" aria-label={label}>
+      {items.map((item) => <button key={item.id} type="button" role="tab" aria-selected={selected === item.id}
+        className={selected === item.id ? "selected" : ""} onClick={() => choose(item.id)}>{item.label}</button>)}
+    </div>;
   }
   const empty = (text: string) => (
     <div className="empty">
@@ -745,9 +752,19 @@ function MoneyApp({ user }: { user: User }) {
                         open("transaction", { type: "expense", date: now() })
                       }
                     >
-                      <Plus size={16} /> Transaction
+                      <Plus size={16} /> Add transaction
                     </button>
                   </div>
+                  <section className="safe-hero" aria-label="Safe to spend">
+                    <div>
+                      <span>Estimated safe to spend today</span>
+                      <strong className={safe < 0 ? "red" : "green"}>{usd(safe)}</strong>
+                      <small>Current cash less card debt, upcoming bills this month and monthly savings reserves.</small>
+                    </div>
+                    <button className="secondary" type="button" onClick={() => { setPage("planning"); setPlanningTab("recurring"); }}>
+                      Review upcoming bills
+                    </button>
+                  </section>
                   <div className="stats">
                     {[
                       ["Current bank balances", bankTotal, `${bank.length} accounts · as of today`],
@@ -776,42 +793,14 @@ function MoneyApp({ user }: { user: User }) {
                   <div className="columns">
                     <section className="panel">
                       <div className="panel-head">
-                        <h2>Cash flow</h2>
-                        <span className="tag">
-                          {annual ? "Yearly" : "Monthly"}
-                        </span>
+                        <h2>Spending by category</h2>
                       </div>
-                      <div className="cash-lines">
-                        <div>
-                          Income <b className="green">{usd(income)}</b>
-                        </div>
-                        <div>
-                          Expenses <b className="red">{usd(spent)}</b>
-                        </div>
-                        <div className="cash-surplus">
-                          Net surplus{" "}
-                          <b className={income >= spent ? "green" : "red"}>
-                            {usd(income - spent)}
-                          </b>
-                        </div>
-                      </div>
-                      <h3>Category spending</h3>
                       <CategoryDonut transactions={period} format={usd} />
                     </section>
                     <section className="panel">
                       <div className="panel-head">
                         <h2>Planning ahead</h2>
                         <Lightbulb size={20} />
-                      </div>
-                      <div className="safe">
-                        <span>Estimated safe to spend today</span>
-                        <strong className={safe < 0 ? "red" : "green"}>
-                          {usd(safe)}
-                        </strong>
-                        <small>
-                          Current cash less card debt, upcoming bills this month and
-                          monthly savings reserves.
-                        </small>
                       </div>
                       <h3>Upcoming charges this month</h3>
                       {pendingExpenses
@@ -862,11 +851,12 @@ function MoneyApp({ user }: { user: User }) {
               )}
               {page === "accounts" && (
                 <>
-                  {section(
-                    "Bank accounts",
-                    "Track checking, savings and cash without bank integrations.",
-                    "account",
-                  )}
+                  {section("Accounts", "Track your cash and credit cards in one place.", "account")}
+                  {tabs([
+                    { id: "banks", label: "Bank & cash" },
+                    { id: "cards", label: "Credit cards" },
+                  ], accountTab, setAccountTab, "Account types")}
+                  {accountTab === "banks" && <>
                   <div className="tiles">
                     {bank.map((a) => (
                       <div className="tile" key={a.id}>
@@ -911,15 +901,8 @@ function MoneyApp({ user }: { user: User }) {
                     Reconcile with an adjustment transaction when your real
                     balance differs.
                   </div>
-                </>
-              )}
-              {page === "cards" && (
-                <>
-                  {section(
-                    "Credit cards",
-                    "Track purchases, amounts due and repayment accounts.",
-                    "account",
-                  )}
+                  </>}
+                  {accountTab === "cards" && <>
                   <div className="tiles">
                     {cards.map((a) => (
                       <div className="tile card-tile" key={a.id}>
@@ -975,15 +958,20 @@ function MoneyApp({ user }: { user: User }) {
                       ))}
                     </section>
                   )}
+                  </>}
                 </>
               )}
-              {page === "schedules" && (
+              {page === "planning" && (
                 <>
-                  {section(
-                    "Recurring income & bills",
-                    "Automatic monthly posting when you open the website.",
-                    "schedule",
-                  )}
+                  {section("Planning", "Stay on top of bills, budgets, goals and trips.")}
+                  {tabs([
+                    { id: "recurring", label: "Recurring" },
+                    { id: "budgets", label: "Budgets" },
+                    { id: "goals", label: "Goals" },
+                    { id: "trips", label: "Trips" },
+                  ], planningTab, setPlanningTab, "Planning sections")}
+                  {planningTab === "recurring" && <>
+                  {section("Recurring income & bills", "Monthly entries post when you open the app.", "schedule", true)}
                   <section className="panel">
                     {d.schedules.map((s) => (
                       <div key={s.id}>
@@ -1006,6 +994,7 @@ function MoneyApp({ user }: { user: User }) {
                     when you open the site. Past entries remain if a schedule
                     changes.
                   </div>
+                  </>}
                 </>
               )}
               {page === "transactions" && (
@@ -1056,88 +1045,14 @@ function MoneyApp({ user }: { user: User }) {
                       <Download size={16} /> Export all CSV
                     </button>
                   </div>
-                  <section className="panel">
-                    {period
-                      .sort((a, b) => b.date.localeCompare(a.date))
-                      .map((t) => (
-                        <div key={t.id}>
-                          {row(
-                            transactionTitle(t),
-                            `${t.date} · ${t.type} · ${name(t.account)}`,
-                            transactionValue(t),
-                            () => open("transaction", t),
-                            () => remove("transactions", t.id),
-                            "Edit",
-                            transactionTone(t),
-                          )}
-                        </div>
-                      ))}
-                    {!period.length && empty("No transactions in this period.")}
-                  </section>
-                </>
-              )}
-              {page === "budgets" && (
-                <>
-                  {section(
-                    "Category budgets",
-                    "Monthly spending limits and savings reserves.",
-                    "budget",
-                  )}
-                  <section className="panel">
-                    {d.budgets.map((b) => (
-                      <div className="budget-row" key={b.id}>
-                        <div className="budget-top">
-                          <b>{b.category}</b>
-                          <span>
-                            <b className="red">{usd(catSpent(b.category))}</b> / {usd(b.amount)}{" "}
-                            <button onClick={() => open("budget", b)}>✎</button>
-                            <button onClick={() => remove("budgets", b.id)}>
-                              ×
-                            </button>
-                          </span>
-                        </div>
-                        <div className="bar">
-                          <div
-                            style={{
-                              width: `${Math.min(100, b.amount ? (catSpent(b.category) / b.amount) * 100 : 0)}%`,
-                              background:
-                                catSpent(b.category) > b.amount
-                                  ? "#dc6868"
-                                  : undefined,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                    {!d.budgets.length &&
-                      empty("Set category limits to see budget progress.")}
-                  </section>
+                  <button className="secondary category-toggle" type="button" aria-expanded={showCategories}
+                    onClick={() => setShowCategories((visible) => !visible)}>
+                    {showCategories ? "Hide categories" : "Manage categories"}
+                  </button>
+                  {showCategories && <>
                   <div className="section-heading second">
                     <div>
-                      <h1>Savings targets</h1>
-                      <p>Monthly amounts reserved from safe-to-spend.</p>
-                    </div>
-                    <button className="secondary" onClick={() => open("goal")}>
-                      + Add goal
-                    </button>
-                  </div>
-                  <section className="panel">
-                    {d.goals.map((g) => (
-                      <div key={g.id}>
-                        {row(
-                          g.name,
-                          `Target ${usd(g.amount)}`,
-                          `${usd(g.monthly)} / month`,
-                          () => open("goal", g),
-                          () => remove("goals", g.id),
-                        )}
-                      </div>
-                    ))}
-                    {!d.goals.length && empty("Create a savings goal.")}
-                  </section>
-                  <div className="section-heading second">
-                    <div>
-                      <h1>Groups & subgroups</h1>
+                      <h2>Groups & subgroups</h2>
                       <p>Customize how expenses are classified.</p>
                     </div>
                     <button
@@ -1189,14 +1104,103 @@ function MoneyApp({ user }: { user: User }) {
                       </div>
                     ))}
                   </section>
+                  </>}
+                  <section className="panel">
+                    {period
+                      .sort((a, b) => b.date.localeCompare(a.date))
+                      .map((t) => (
+                        <div key={t.id}>
+                          {row(
+                            transactionTitle(t),
+                            `${t.date} · ${t.type} · ${name(t.account)}`,
+                            transactionValue(t),
+                            () => open("transaction", t),
+                            () => remove("transactions", t.id),
+                            "Edit",
+                            transactionTone(t),
+                          )}
+                        </div>
+                      ))}
+                    {!period.length && empty("No transactions in this period.")}
+                  </section>
+
                 </>
               )}
-              {page === "trips" && (
+              {page === "planning" && planningTab === "budgets" && (
+                <>
+                  {section(
+                    "Category budgets",
+                    "Monthly category spending limits.",
+                    "budget",
+                    true,
+                  )}
+                  <section className="panel">
+                    {d.budgets.map((b) => (
+                      <div className="budget-row" key={b.id}>
+                        <div className="budget-top">
+                          <b>{b.category}</b>
+                          <span>
+                            <b className="red">{usd(catSpent(b.category))}</b> / {usd(b.amount)}{" "}
+                            <button onClick={() => open("budget", b)}>✎</button>
+                            <button onClick={() => remove("budgets", b.id)}>
+                              ×
+                            </button>
+                          </span>
+                        </div>
+                        <div className="bar">
+                          <div
+                            style={{
+                              width: `${Math.min(100, b.amount ? (catSpent(b.category) / b.amount) * 100 : 0)}%`,
+                              background:
+                                catSpent(b.category) > b.amount
+                                  ? "#dc6868"
+                                  : undefined,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    {!d.budgets.length &&
+                      empty("Set category limits to see budget progress.")}
+                  </section>
+
+
+                </>
+              )}
+              {page === "planning" && planningTab === "goals" && (
+                <>
+                  <div className="section-heading second">
+                    <div>
+                      <h2>Savings targets</h2>
+                      <p>Monthly amounts reserved from safe-to-spend.</p>
+                    </div>
+                    <button className="secondary" onClick={() => open("goal")}>
+                      + Add goal
+                    </button>
+                  </div>
+                  <section className="panel">
+                    {d.goals.map((g) => (
+                      <div key={g.id}>
+                        {row(
+                          g.name,
+                          `Target ${usd(g.amount)}`,
+                          `${usd(g.monthly)} / month`,
+                          () => open("goal", g),
+                          () => remove("goals", g.id),
+                        )}
+                      </div>
+                    ))}
+                    {!d.goals.length && empty("Create a savings goal.")}
+                  </section>
+                </>
+              )}
+              {page === "planning" && planningTab === "trips" && (
                 <>
                   {section(
                     "Trips",
                     "Trip expenses are also counted in your monthly finances.",
                     "trip",
+                    true,
                   )}
                   <div className="tiles">
                     {d.trips.map((t) => {
@@ -1415,27 +1419,36 @@ function MoneyApp({ user }: { user: User }) {
               )}
               {modal === "transaction" && (
                 <>
-                  {field("Type", "type", "select", [
-                    { value: "expense", label: "Expense" },
-                    { value: "income", label: "Income" },
-                    { value: "transfer", label: "Transfer" },
+                  <div className="field">
+                    <span>Type</span>
+                    <div className="kind-switch" role="group" aria-label="Transaction type">
+                      <button type="button" className={!showOtherTypes && (f.type || "expense") === "expense" ? "selected" : ""}
+                        onClick={() => { setShowOtherTypes(false); setF({ ...f, type: "expense", account: "", to: "" }); }}>Expense</button>
+                      <button type="button" className={!showOtherTypes && f.type === "income" ? "selected" : ""}
+                        onClick={() => { setShowOtherTypes(false); setF({ ...f, type: "income", account: "", to: "" }); }}>Income</button>
+                      <button type="button" className={showOtherTypes ? "selected" : ""}
+                        onClick={() => { setShowOtherTypes(true); setF({ ...f, type: showOtherTypes ? f.type : "transfer", account: "", to: "" }); }}>More</button>
+                    </div>
+                  </div>
+                  {showOtherTypes && field("Other type", "type", "select", [
+                    { value: "transfer", label: "Transfer between accounts" },
                     { value: "payment", label: "Credit card repayment" },
                     { value: "adjustment", label: "Balance adjustment (+/−)" },
                   ])}
                   {field("Amount ($)", "amount", "number")}
                   {field("Date", "date", "date")}
                   {field(
-                    "Account",
+                    f.type === "payment" ? "Pay from" : f.type === "transfer" ? "Move from" : f.type === "income" ? "Receive in" : f.type === "expense" ? "Charge to" : "Account",
                     "account",
                     "select",
                     withArchived(
-                      f.type === "payment" ? bankOptions : accountOptions,
+                      ["payment", "transfer", "income"].includes(f.type) ? bankOptions : accountOptions,
                       originalTransaction?.account,
                     ),
                   )}
                   {["payment", "transfer"].includes(f.type) &&
                     field(
-                      "Destination",
+                      f.type === "payment" ? "Pay card" : "Move to",
                       "to",
                       "select",
                       withArchived(
