@@ -26,7 +26,7 @@ import {
   supabase,
 } from "./supabase";
 import type { User } from "@supabase/supabase-js";
-import { balances, goalProgress, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "./ledger";
+import { balances, captureCardStatement, goalProgress, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "./ledger";
 import type { Data, Item } from "./ledger";
 import { CashflowChart, CategoryDonut } from "./charts";
 const blank: Data = {
@@ -294,10 +294,18 @@ function MoneyApp({ user }: { user: User }) {
         setError("Account type cannot change after creation. Add a new account instead.");
         return;
       }
+      if (f.type === "card") {
+        const statementProblem = validateAmount(f.statement || "0", "statement amount", true);
+        if (statementProblem) {
+          setError(statementProblem);
+          return;
+        }
+      }
       base.opening = v;
       base.isSavings = f.type === "bank" && f.isSavings === "true";
       base.limit = amount(f.limit);
       base.statement = amount(f.statement);
+      if (existing?.type === "card" && base.statement !== existing.statement) delete base.statementDate;
       next.accounts = [...d.accounts.filter((x) => x.id !== key), base];
     }
     if (modal === "transaction") {
@@ -504,6 +512,11 @@ function MoneyApp({ user }: { user: User }) {
         item.id === account.id ? { ...item, archived: false } : item,
       ),
     });
+  }
+  async function setStatement(card: Item) {
+    const currentDebt = Math.max(0, bal[card.id] || 0);
+    if (!confirm(`Set ${card.name}'s statement snapshot to ${usd(currentDebt)} as of ${today}? Do this when the statement closes, then check the amount against your card issuer.`)) return;
+    await save(captureCardStatement(d, card.id, today));
   }
   async function removeCategorySubgroup(group: string, sub: string) {
     const nextSubs = (d.categories[group] || []).filter((item) => item !== sub);
@@ -933,14 +946,11 @@ function MoneyApp({ user }: { user: User }) {
                     {cards.map((a) => (
                       <div className="tile card-tile" key={a.id}>
                         <CreditCard size={24} />
-                        <small>CREDIT CARD</small>
+                        <small>CURRENT CARD DEBT</small>
                         <h2>{a.name}</h2>
                         <strong className={bal[a.id] > 0 ? "red" : "green"}>{usd(bal[a.id])}</strong>
-                        <p>
-                          Statement snapshot (manual): {usd(a.statement || 0)} · Day{" "}
-                          {a.due || 1}
-                        </p>
-                        <p>Paid from {name(a.payFrom)}</p>
+                        <p>Statement snapshot: {usd(a.statement || 0)} · {a.statementDate ? `captured ${a.statementDate}` : "manual"}</p>
+                        <p>Due day {a.due || 1} · Paid from {name(a.payFrom)}</p>
                         <div>
                           <button
                             onClick={() =>
@@ -961,6 +971,7 @@ function MoneyApp({ user }: { user: User }) {
                           >
                             Pay
                           </button>
+                          <button disabled={busy} onClick={() => void setStatement(a)}>Set statement</button>
                           <button onClick={() => archiveAccount(a)}>
                             Archive
                           </button>
@@ -969,6 +980,7 @@ function MoneyApp({ user }: { user: User }) {
                     ))}
                   </div>
                   {!cards.length && !archivedCards.length && empty("Add your first credit card.")}
+                  {cards.length > 0 && <div className="notice">Set the statement when your billing cycle closes. Later purchases change current debt, while the captured statement stays fixed.</div>}
                   {archivedCards.length > 0 && (
                     <section className="panel">
                       <h2>Archived cards</h2>

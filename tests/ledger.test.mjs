@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { balances, categoryTotals, goalProgress, monthlyFlow, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "../src/ledger.ts";
+import { balances, captureCardStatement, categoryTotals, goalProgress, monthlyFlow, postDue, safeToSpend, transactionsForPeriod, upcomingExpenseObligations, upcomingExpenseSchedules, validateAmount, validateManualDate, validateTransaction, withCategory } from "../src/ledger.ts";
 
 const accounts = [
   { id: "checking", name: "Checking", type: "bank", opening: 10000 },
@@ -39,6 +39,28 @@ test("card purchase and repayment change debt without double counting the purcha
     { id: "repayment", type: "payment", amount: 2000, account: "checking", to: "card" },
   ] }));
   assert.deepEqual(result, { checking: 8000, savings: 0, card: 1000 });
+});
+
+test("card statement captures current debt through today and remains a snapshot", () => {
+  const ledger = data({ accounts: accounts.map((account) =>
+    account.id === "card" ? { ...account, opening: 10000, statement: 4000 } : account),
+    transactions: [
+      { id: "purchase", date: "2026-10-20", type: "expense", amount: 5000, account: "card" },
+      { id: "payment", date: "2026-10-25", type: "payment", amount: 2000, account: "checking", to: "card" },
+      { id: "future", date: "2026-11-01", type: "expense", amount: 3000, account: "card" },
+    ],
+  });
+  const captured = captureCardStatement(ledger, "card", "2026-10-30");
+  assert.equal(captured.accounts.find((account) => account.id === "card").statement, 13000);
+  assert.equal(captured.accounts.find((account) => account.id === "card").statementDate, "2026-10-30");
+  assert.equal(captured.accounts.find((account) => account.id === "checking"), ledger.accounts.find((account) => account.id === "checking"));
+  assert.equal(captureCardStatement(captured, "checking", "2026-10-30"), captured);
+  assert.equal(balances(captured, "2026-11-01").card, 16000);
+  assert.equal(captured.accounts.find((account) => account.id === "card").statement, 13000);
+  const credit = data({ accounts: accounts.map((account) =>
+    account.id === "card" ? { ...account, opening: -1000 } : account),
+  });
+  assert.equal(captureCardStatement(credit, "card", "2026-10-30").accounts.find((account) => account.id === "card").statement, 0);
 });
 
 test("a skipped recurring occurrence does not reappear", () => {

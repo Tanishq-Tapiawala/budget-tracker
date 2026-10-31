@@ -5,6 +5,7 @@ Personal budget tracker built with React, TypeScript, Vite and Supabase. GitHub 
 ## Features
 
 - Bank and credit-card balances; purchases and card repayments recorded separately
+- Card purchases update current debt. Use **Set statement** when a billing cycle closes to copy current debt into a dated statement snapshot; later purchases leave that snapshot unchanged.
 - Income and expenses, transfers, group/subgroup categories
 - Monthly recurring income and charges (posted on next app opening after a due date)
 - Skipped recurring occurrences stay skipped; creating a due schedule posts it immediately
@@ -65,7 +66,7 @@ The current Site has a **different database**. This migration does not silently 
 - Each ledger save uses a revision condition to avoid silently overwriting another device's changes. If there is a conflict, reload and retry.
 - The save indicator reflects the server response. Failed saves keep forms open; other failed actions offer a retry.
 - Scheduled income and bills are posted on the next visit to the app, **not by a server-side timer**. A schedule posts at most once per month.
-- Statement amounts are manually managed and reports use browser Print → Save as PDF.
+- Statement snapshots are manually captured or edited; the app does not know issuer closing dates, fees, or adjustments. Reports use browser Print → Save as PDF.
 - Safe-to-spend is a planning estimate for the current month; it does not predict unscheduled spending or future income.
 - Savings transfers are records in this app. Make the actual transfer with your bank separately. Goal progress uses the amount already saved that you enter plus linked transfers; an unlinked transfer does not count toward a goal.
 - Deleting a goal removes its future monthly reserve but retains historical transfers and their recorded savings amounts in reports.

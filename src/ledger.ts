@@ -136,6 +136,17 @@ export function balances(data: Data, through?: string) {
   return result;
 }
 
+export function captureCardStatement(data: Data, cardId: string, today: string): Data {
+  const card = data.accounts.find((account) => account.id === cardId);
+  if (!card || card.type !== "card" || card.archived) return data;
+  const statement = Math.max(0, balances(data, today)[cardId] || 0);
+  return {
+    ...data,
+    accounts: data.accounts.map((account) =>
+      account.id === cardId ? { ...account, statement, statementDate: today } : account),
+  };
+}
+
 export function safeToSpend(data: Data, today: string) {
   const current = balances(data, today);
   const upcoming = upcomingExpenseSchedules(data, today);
